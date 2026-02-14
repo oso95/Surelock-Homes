@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Surelock Homes</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Surelock Homes</h1>
+      <p>Submit a fraud-investigation request. Local offline mode is recommended for predictable demos.</p>
+
+      <label for="query">Investigation prompt</label>
+      <textarea id="query" rows="4">Investigate childcare providers in ZIP 60612 and identify physical impossibility flags.</textarea>
+
+      <div class="controls">
+        <button id="runBtn">Run investigation</button>
+        <label>
+          <input id="offlineToggle" type="checkbox" checked />
+          Offline mode
+        </label>
+      </div>
+
+      <h2>Result</h2>
+      <pre id="result">Run an investigation to view output.</pre>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

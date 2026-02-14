@@ -1,0 +1,14 @@
+{
+  "MN": {
+    "infant": 1600,
+    "toddler": 1300,
+    "preschool": 1100,
+    "school_age": 900
+  },
+  "IL": {
+    "infant": 1500,
+    "toddler": 1200,
+    "preschool": 1000,
+    "school_age": 820
+  }
+}

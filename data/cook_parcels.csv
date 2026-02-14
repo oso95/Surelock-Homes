@@ -1,0 +1,8 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+2301 S California Ave,IL,Cook,1100,3000,R1,Residential,1982
+1847 W Roosevelt Rd,IL,Cook,900,2200,R1,Residential,1975
+606 Southfield St,IL,Cook,5000,4500,C3,Commercial,2001
+2500 S Indiana Ave,IL,Cook,3200,5000,C1,Commercial,1988
+3801 W 63rd St,IL,Cook,2400,4200,C2,Commercial,1999
+1200 W Cermak Rd,IL,Cook,600,1800,R1,Residential,1990
+1200 E 55th St,IL,Cook,1800,3900,R3,Residential,2005

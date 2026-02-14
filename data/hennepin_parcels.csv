@@ -1,0 +1,6 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+100 Birch Ave,MN,Hennepin,1100,4000,R1,Residential,1980
+1200 Cedar St,MN,Hennepin,2800,7000,C1,Commercial,1995
+2220 Lake Ave,MN,Hennepin,700,3200,R2,Residential,1970
+420 Maple Rd,MN,Hennepin,15000,50000,C2,Commercial,2000
+15 North View Way,MN,Hennepin,900,2500,R1,Residential,1960

@@ -1,0 +1,10 @@
+provider_name,state,address,license_type,license_status,issue_date,expiration_date,capacity,violation_history,inspection_notes
+Bright Future Learning Center,IL,2301 S California Ave,Day Care Center,Active,2021-01-10,2026-01-10,85,No formal violations,"Strongly compliant"
+Little Stars Academy,IL,1847 W Roosevelt Rd,Day Care Center,Active,2020-08-11,2026-08-11,90,Pending complaint,"Inspection scheduled"
+Little Stars Academy East,IL,1847 W Roosevelt Rd,Day Care Center,Active,2020-09-02,2026-09-02,45,No violations,"No issues"
+Windy City Care,IL,606 Southfield St,Day Care Center,Active,2019-06-20,2025-06-20,60,Safety inspection warning,"Needs minor corrections"
+West Loop Learning Home,IL,2301 S California Ave,Group Day Care Home,Active,2018-12-05,2025-12-05,30,No violations,"Passed"
+South Side Nursery,IL,2500 S Indiana Ave,Day Care Center,Active,2016-05-12,2026-05-12,40,Fire safety warning,"Noted"
+Bronzeville Children House,IL,3801 W 63rd St,Family Day Care,Active,2021-05-01,2026-05-01,22,No violations,"Compliance current"
+Englewood Playhouse,IL,1200 W Cermak Rd,Day Care Home,Inactive,2015-11-08,2022-11-08,15,No complaints,"No longer active"
+Hyde Park Kids,IL,1200 E 55th St,Day Care Center,Active,2019-01-30,2025-01-30,25,No violations,"Passed"
