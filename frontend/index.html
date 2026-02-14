@@ -3,28 +3,126 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Surelock Homes</title>
+    <title>Surelock Homes | Investigative Command</title>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
-    <main class="container">
-      <h1>Surelock Homes</h1>
-      <p>Submit a fraud-investigation request. Local offline mode is recommended for predictable demos.</p>
+    <div class="page">
+      <header class="topbar">
+        <p class="eyebrow">Fraud Detection Research Console</p>
+        <h1>Surelock Homes</h1>
+        <p class="subtitle">Run reproducible investigations and inspect model thinking + tool evidence.</p>
+      </header>
 
-      <label for="query">Investigation prompt</label>
-      <textarea id="query" rows="4">Investigate childcare providers in ZIP 60612 and identify physical impossibility flags.</textarea>
+      <main class="layout">
+        <section class="panel controls-panel">
+          <div class="panel-header">
+            <h2>Investigation Request</h2>
+            <span id="connectionStatus" class="chip chip--warning">Backend: checking…</span>
+          </div>
+          <label for="query">Prompt</label>
+          <textarea id="query" rows="5" placeholder="Investigate providers in ZIP 60612 and return all anomalies.">Investigate Illinois providers in ZIP 60612</textarea>
 
-      <div class="controls">
-        <button id="runBtn">Run investigation</button>
-        <label>
-          <input id="offlineToggle" type="checkbox" checked />
-          Offline mode
-        </label>
-      </div>
+          <div class="control-grid">
+            <label class="toggle">
+              <input id="offlineToggle" type="checkbox" checked />
+              Offline mode (deterministic fixtures)
+            </label>
 
-      <h2>Result</h2>
-      <pre id="result">Run an investigation to view output.</pre>
-    </main>
+            <label class="range">
+              Max turns
+              <div class="range-row">
+                <input id="turnsRange" type="range" min="1" max="10" value="5" />
+                <span id="turnsValue">5</span>
+              </div>
+            </label>
+          </div>
+
+          <div class="quick-queries" aria-label="Prompt presets">
+            <button class="chip-btn" type="button" data-query="Investigate Minnesota providers in ZIP 55401">MN ZIP 55401</button>
+            <button class="chip-btn" type="button" data-query="Investigate Illinois providers in ZIP 60612">IL ZIP 60612</button>
+            <button class="chip-btn" type="button" data-query="Investigate Illinois providers in ZIP 60629 with capacity check">IL ZIP 60629</button>
+          </div>
+
+          <div class="actions">
+            <button id="runBtn" type="button">Run Investigation</button>
+            <button id="copyJsonBtn" type="button" class="ghost" disabled>Copy JSON</button>
+          </div>
+
+          <p id="runMessage" class="status-text">Ready.</p>
+        </section>
+
+        <section class="panel metrics-panel">
+          <h2>Run Summary</h2>
+          <div class="stats">
+            <div class="stat">
+              <span>Mode</span>
+              <strong id="metricMode">-</strong>
+            </div>
+            <div class="stat">
+              <span>Providers</span>
+              <strong id="metricProviders">-</strong>
+            </div>
+            <div class="stat">
+              <span>Flags</span>
+              <strong id="metricFlags">-</strong>
+            </div>
+            <div class="stat">
+              <span>Turns</span>
+              <strong id="metricTurns">-</strong>
+            </div>
+          </div>
+
+          <h3>Latest Narrative</h3>
+          <p id="metricSummary" class="summary-text">No investigation has been run yet.</p>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Flags</h2>
+            <span id="flagBadge" class="chip chip--neutral">No data</span>
+          </div>
+          <div id="flagsList" class="card-list">
+            <p class="placeholder">Run an investigation to populate flagged providers.</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Agent Thinking / Narration</h2>
+          <div class="split-columns">
+            <div class="mini-panel">
+              <h3>Thinking</h3>
+              <ul id="thinkingList" class="list">
+                <li class="placeholder">No thinking trace.</li>
+              </ul>
+            </div>
+            <div class="mini-panel">
+              <h3>Narration</h3>
+              <ul id="narrationList" class="list">
+                <li class="placeholder">No narration yet.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Tool Activity</h2>
+          <div id="toolCallList" class="card-list">
+            <p class="placeholder">No tool calls yet.</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Raw Evidence</h2>
+          <details>
+            <summary>Open JSON payload</summary>
+            <div class="raw-wrap">
+              <pre id="jsonPayload">{}</pre>
+            </div>
+          </details>
+        </section>
+      </main>
+    </div>
 
     <script src="/static/app.js"></script>
   </body>
