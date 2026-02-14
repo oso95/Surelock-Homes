@@ -18,6 +18,7 @@ const flagsList = document.getElementById("flagsList");
 const thinkingList = document.getElementById("thinkingList");
 const narrationList = document.getElementById("narrationList");
 const toolCallList = document.getElementById("toolCallList");
+const timelineList = document.getElementById("timelineList");
 
 let lastPayload = null;
 
@@ -45,8 +46,20 @@ function formatCode(value) {
   return JSON.stringify(value, null, 2);
 }
 
-function setPlaceholder(list, text) {
-  list.innerHTML = `<li class="placeholder">${text}</li>`;
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function setPlaceholder(container, text, asText = false) {
+  if (asText) {
+    container.textContent = text;
+    return;
+  }
+
+  container.innerHTML = `<li class="placeholder">${escapeHtml(text)}</li>`;
 }
 
 function renderMetrics(payload) {
@@ -55,16 +68,16 @@ function renderMetrics(payload) {
   metricProviders.textContent = String(payload.provider_count ?? 0);
   metricFlags.textContent = String(flags);
   metricTurns.textContent = String(payload.turns ?? 0);
-  metricSummary.textContent =
-    payload.assistant_text || payload.narration || "Investigation completed with no assistant summary.";
 
-  metricMode.textContent = payload.mode || "offline";
+  metricSummary.textContent =
+    payload.assistant_text ||
+    (Array.isArray(payload.narration) ? payload.narration.join(" ") : "Investigation completed with no assistant summary.");
+
   flagBadge.textContent = `${flags} flagged`;
   flagBadge.className = "chip " + (flags > 0 ? "chip--warn" : "chip--neutral");
 
   if (payload.mode === "agent") {
     metricMode.textContent = "agent (live)";
-    metricMode?.classList?.add?.("active");
   }
 }
 
@@ -91,21 +104,32 @@ function buildFlagCard(flag, index) {
   const addr = provider.address || provider.location || "Address not available";
   const maxLegal = flag.max_legal_capacity ?? flag.legal_max_capacity ?? "N/A";
   const licensed = flag.licensed_capacity ?? "N/A";
-  const extras = {
-    provider: name,
-    address: addr,
+
+  const excess = flag.excess_capacity ??
+    (Number.isFinite(Number(licensed)) && Number.isFinite(Number(maxLegal))
+      ? Math.max(0, Number(licensed) - Number(maxLegal))
+      : "N/A");
+
+  const details = {
+    state: provider.state || "unknown",
+    source: provider.source || "local",
     licensed_capacity: licensed,
     max_legal_capacity: maxLegal,
-    excess_capacity: flag.excess_capacity ?? (Number.isFinite(Number(licensed)) && Number.isFinite(Number(maxLegal))
-      ? Math.max(0, Number(licensed) - Number(maxLegal))
-      : "N/A"),
-    source: provider.source || "local",
-    state: provider.state || "unknown",
+    excess_capacity: excess,
   };
 
   card.innerHTML = `
-    <h4>${index + 1}. ${escapeHtml(extras.provider)}</h4>
-    <p class="result-meta">${escapeHtml(extras.address)} &nbsp;â€¢&nbsp; ${escapeHtml(extras.state.toString())}</p>
+    <div class="flag-card-header">
+      <h4>${escapeHtml(index + 1)}. ${escapeHtml(name)}</h4>
+      <span class="chip chip--warn">Potential mismatch</span>
+    </div>
+    <p class="result-meta">${escapeHtml(addr)} ¡E ${escapeHtml(details.state)}</p>
+    <ul class="mini-meta">
+      <li>Licensed capacity: ${escapeHtml(details.licensed_capacity)}</li>
+      <li>Max legal capacity: ${escapeHtml(details.max_legal_capacity)}</li>
+      <li>Excess: ${escapeHtml(details.excess_capacity)}</li>
+      <li>Source: ${escapeHtml(details.source)}</li>
+    </ul>
     <details>
       <summary>Show full flag record</summary>
       <pre class="code-block">${escapeHtml(formatCode(flag))}</pre>
@@ -129,7 +153,7 @@ function renderFlags(flags) {
 
 function renderToolCalls(toolCalls) {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-    toolCallList.innerHTML = `<p class=\"placeholder\">No tool calls recorded for this run.</p>`;
+    toolCallList.innerHTML = `<p class="placeholder">No tool calls recorded for this run.</p>`;
     return;
   }
   toolCallList.innerHTML = "";
@@ -141,7 +165,7 @@ function renderToolCalls(toolCalls) {
     const args = formatCode(entry.arguments || {});
     const result = formatCode(entry.result);
     card.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.6rem">
+      <div class="tool-header">
         <h4>${escapeHtml(entry.tool || "tool")}</h4>
         <span class="chip ${statusClass}">${escapeHtml(status)}</span>
       </div>
@@ -158,11 +182,96 @@ function renderToolCalls(toolCalls) {
   });
 }
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+function buildTimelineEvents(payload) {
+  const events = [];
+  events.push({
+    kind: "query",
+    label: "Query submitted",
+    detail: payload.query || "Investigation query received.",
+    tone: "neutral",
+  });
+
+  const rawTurns = Array.isArray(payload.raw_turns) ? payload.raw_turns : [];
+  if (rawTurns.length > 0) {
+    rawTurns.forEach((turn) => {
+      const turnNo = turn.turn || 0;
+      const assistantText = (turn.assistant || "").toString().trim();
+      if (assistantText) {
+        events.push({
+          kind: "assistant",
+          label: `Turn ${turnNo} assistant response`,
+          detail: assistantText,
+          tone: "ok",
+        });
+      }
+      if (Array.isArray(turn.tool_results)) {
+        turn.tool_results.forEach((toolItem) => {
+          const toolLabel = toolItem.tool || "tool";
+          const args = toolItem.result ? "(result returned)" : "(no result)";
+          const hasError = toolItem.status && toolItem.status !== "ok";
+          events.push({
+            kind: "tool",
+            label: `Turn ${turnNo}: ${toolLabel}`,
+            detail: `${args}`,
+            tone: hasError ? "warn" : "ok",
+          });
+        });
+      }
+      if (turn.provider || turn.provider_name || turn.tool) {
+        const providerName = turn.provider?.name || turn.provider_name || turn.provider || "Provider inspected";
+        events.push({
+          kind: "provider",
+          label: `Turn ${turnNo} target`,
+          detail: providerName,
+          tone: "neutral",
+        });
+      }
+    });
+    return events;
+  }
+
+  if (Array.isArray(payload.tool_calls) && payload.tool_calls.length > 0) {
+    payload.tool_calls.forEach((tool) => {
+      events.push({
+        kind: "tool",
+        label: tool.tool || "tool",
+        detail: formatCode(tool.input || tool.arguments || {}),
+        tone: tool.status === "ok" ? "ok" : "warn",
+      });
+    });
+  }
+
+  return events;
+}
+
+function renderTimeline(payload) {
+  const events = buildTimelineEvents(payload);
+  if (events.length === 0) {
+    timelineList.innerHTML = `<p class="timeline-empty">No timeline events available.</p>`;
+    return;
+  }
+
+  timelineList.innerHTML = "";
+  events.forEach((event, index) => {
+    const row = document.createElement("article");
+    row.className = "timeline-item";
+
+    const toneClass = event.tone === "warn" ? "timeline-item--warn" : event.tone === "ok" ? "timeline-item--ok" : "";
+    const title = event.label || "System event";
+
+    row.innerHTML = `
+      <div class="timeline-dot ${toneClass}"></div>
+      <div class="timeline-card">
+        <p class="timeline-step">${escapeHtml(title)}</p>
+        <p class="timeline-meta">${escapeHtml(event.detail || "No details.")}</p>
+      </div>
+    `;
+    timelineList.appendChild(row);
+
+    if (index === events.length - 1) {
+      row.classList.add("timeline-item--last");
+    }
+  });
 }
 
 function renderThinkingAndNarration(payload) {
@@ -183,12 +292,11 @@ function renderThinkingAndNarration(payload) {
 
 function renderPayload(payload) {
   jsonPayload.textContent = formatCode(payload);
-  metricSummary.textContent =
-    payload.assistant_text || (Array.isArray(payload.narration) ? payload.narration.join(" ") : "Investigation complete.");
   renderMetrics(payload);
   renderFlags(payload.flagged);
   renderThinkingAndNarration(payload);
   renderToolCalls(payload.tool_calls);
+  renderTimeline(payload);
   copyJsonBtn.disabled = false;
 }
 
@@ -212,8 +320,9 @@ runBtn.addEventListener("click", async () => {
     setStatusText("Enter a query before running.", true);
     return;
   }
+
   runBtn.disabled = true;
-  runBtn.textContent = "Runningâ€¦";
+  runBtn.textContent = "Running¡K";
   runMessage.textContent = "Starting investigation...";
   copyJsonBtn.disabled = true;
 

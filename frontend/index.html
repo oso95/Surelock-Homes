@@ -18,7 +18,7 @@
         <section class="panel controls-panel">
           <div class="panel-header">
             <h2>Investigation Request</h2>
-            <span id="connectionStatus" class="chip chip--warning">Backend: checkingâ€¦</span>
+            <span id="connectionStatus" class="chip chip--warning">Backend: checking¡K</span>
           </div>
           <label for="query">Prompt</label>
           <textarea id="query" rows="5" placeholder="Investigate providers in ZIP 60612 and return all anomalies.">Investigate Illinois providers in ZIP 60612</textarea>
@@ -103,6 +103,12 @@
               </ul>
             </div>
           </div>
+        </section>
+
+        <section class="panel">
+          <h2>Execution Timeline</h2>
+          <p class="timeline-subtitle">A chronological view of each investigation step.</p>
+          <div id="timelineList" class="timeline"></div>
         </section>
 
         <section class="panel">
