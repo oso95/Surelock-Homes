@@ -32,6 +32,11 @@ from tools.capacity import calculate_max_capacity
 from tools.geocoding import geocode_address
 
 
+_OPENROUTER_MAX_CONTEXT_CHARS = 180000
+_OPENROUTER_TOOL_PAYLOAD_CHARS = 8000
+_OPENROUTER_MAX_LIST_ITEMS = 6
+
+
 def _normalize_blocks(content: Any) -> List[Dict[str, Any]]:
     if isinstance(content, list):
         normalized: List[Dict[str, Any]] = []
@@ -54,6 +59,73 @@ def _normalize_blocks(content: Any) -> List[Dict[str, Any]]:
                 normalized.append(payload)
         return normalized
     return []
+
+
+def _compact_scalar(value: str, limit: int) -> str:
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... [truncated {len(text) - limit} chars]"
+
+
+def _summarize_for_model(value: Any, max_depth: int = 2) -> Any:
+    if max_depth <= 0:
+        if isinstance(value, str):
+            return _compact_scalar(value, 200)
+        return str(value)[:200]
+
+    if isinstance(value, dict):
+        compact: Dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"images", "recent_reviews", "features"} and isinstance(item, list):
+                compact[key] = {
+                    "count": len(item),
+                    "sample": [
+                        _summarize_for_model(entry, max_depth=max_depth - 1)
+                        for entry in item[:_OPENROUTER_MAX_LIST_ITEMS]
+                    ],
+                }
+            elif isinstance(item, list):
+                compact[key] = _summarize_for_model(item, max_depth=max_depth - 1)
+            elif isinstance(item, dict):
+                compact[key] = _summarize_for_model(item, max_depth=max_depth - 1)
+            elif isinstance(item, str):
+                compact[key] = _compact_scalar(item, 220)
+            else:
+                compact[key] = item
+        return compact
+
+    if isinstance(value, list):
+        compact_items = [
+            _summarize_for_model(item, max_depth=max_depth - 1)
+            for item in value[:_OPENROUTER_MAX_LIST_ITEMS]
+        ]
+        result: Dict[str, Any] = {"count": len(value)}
+        if len(value) > _OPENROUTER_MAX_LIST_ITEMS:
+            result["truncated"] = True
+        result["items"] = compact_items
+        return result
+
+    if isinstance(value, str):
+        return _compact_scalar(value, 320)
+    return value
+
+
+def _compact_tool_result(value: Any) -> Any:
+    compact = _summarize_for_model(value)
+    text = json.dumps(compact, ensure_ascii=False)
+    if len(text) <= _OPENROUTER_TOOL_PAYLOAD_CHARS:
+        return compact
+    fallback = {"payload": _compact_scalar(text, _OPENROUTER_TOOL_PAYLOAD_CHARS)}
+    fallback["truncated_length"] = len(text)
+    return fallback
+
+
+def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _OPENROUTER_MAX_CONTEXT_CHARS) -> None:
+    if max_chars <= 0:
+        return
+    while len(json.dumps(messages, ensure_ascii=False)) > max_chars and len(messages) > 2:
+        messages.pop(1)
 
 
 def _to_openrouter_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -116,11 +188,13 @@ def _run_openrouter_investigation(
     assistant_text: List[str] = []
 
     for turn in range(1, max_turns + 1):
+        _enforce_context_budget(messages)
         request_payload = {
             "model": model,
             "messages": messages,
             "tools": openrouter_tools,
             "tool_choice": "auto",
+            "max_tokens": settings.max_tokens,
         }
         resp = requests.post(
             url,
@@ -183,9 +257,10 @@ def _run_openrouter_investigation(
                     "role": "tool",
                     "tool_call_id": tool_call.get("id"),
                     "name": tool_name,
-                    "content": json.dumps(result),
+                    "content": json.dumps(_compact_tool_result(result)),
                 }
             )
+            _enforce_context_budget(messages)
 
         raw_turns.append(turn_summary)
 
