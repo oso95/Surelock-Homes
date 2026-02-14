@@ -80,13 +80,42 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Set `LLM_PROVIDER` to `anthropic` or `openrouter`.
-When using OpenRouter:
+Create `.env` with one of the following provider blocks:
+
+### Anthropic (default)
+
+```bash
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your_anthropic_api_key
+MODEL=claude-opus-4-6-20250514
+```
+
+### OpenRouter
 
 ```bash
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=...
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_SITE_URL=http://localhost:8000
+OPENROUTER_APP_NAME=Surelock Homes
 MODEL=anthropic/claude-opus-4-6
+```
+
+Notes:
+- `MODEL` can be any OpenRouter-compatible model ID (for example `deepseek/deepseek-chat`, `google/gemini-pro-1.5`, etc.).
+- Switch back to Anthropic by setting `LLM_PROVIDER=anthropic`.
+
+`offline` mode bypasses both providers and uses deterministic local datasets.
+
+```bash
+# quick API examples (with server on 127.0.0.1:8000)
+curl -X POST http://127.0.0.1:8000/api/investigate \
+  -H "Content-Type: application/json" \
+  -d "{\"query\":\"Investigate Illinois providers in ZIP 60612\",\"max_turns\":6,\"offline\":false}"
+
+curl -X POST http://127.0.0.1:8000/api/investigate \
+  -H "Content-Type: application/json" \
+  -d "{\"query\":\"Investigate Illinois providers in ZIP 60612\",\"max_turns\":6,\"offline\":true}"
 ```
 
 4. Start the API:
@@ -120,6 +149,7 @@ Request body:
 ```
 
 `offline` is recommended for deterministic local runs in CI.
+- `offline: false` will use live LLM if configured via `LLM_PROVIDER`.
 
 ## Running scripts
 
