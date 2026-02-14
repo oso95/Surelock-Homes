@@ -1,6 +1,7 @@
 ﻿const runBtn = document.getElementById("runBtn");
 const queryInput = document.getElementById("query");
 const offlineToggle = document.getElementById("offlineToggle");
+const modeHint = document.getElementById("modeHint");
 const turnsRange = document.getElementById("turnsRange");
 const turnsValue = document.getElementById("turnsValue");
 const copyJsonBtn = document.getElementById("copyJsonBtn");
@@ -332,7 +333,7 @@ runBtn.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         query,
-        offline: offlineToggle.checked,
+        offline: !offlineToggle.checked,
         max_turns: Number(turnsRange.value),
       }),
     });
@@ -355,6 +356,27 @@ runBtn.addEventListener("click", async () => {
   }
 });
 
+const OFFLINE_PREFERENCE_KEY = "surelock_offline_mode";
+
+function updateModeHint() {
+  if (offlineToggle.checked) {
+    modeHint.textContent = "Offline mode enabled. Uncheck to run online.";
+  } else {
+    modeHint.textContent = "Online mode enabled. Live provider is controlled by LLM_PROVIDER.";
+  }
+}
+
+function restoreModePreference() {
+  const saved = localStorage.getItem(OFFLINE_PREFERENCE_KEY);
+  offlineToggle.checked = saved === null ? false : saved === "1";
+  updateModeHint();
+}
+
+offlineToggle.addEventListener("change", () => {
+  localStorage.setItem(OFFLINE_PREFERENCE_KEY, offlineToggle.checked ? "1" : "0");
+  updateModeHint();
+});
+
 copyJsonBtn.addEventListener("click", async () => {
   if (!lastPayload) return;
   const text = formatCode(lastPayload);
@@ -363,6 +385,6 @@ copyJsonBtn.addEventListener("click", async () => {
   setTimeout(() => setStatusText("Ready."), 1200);
 });
 
+restoreModePreference();
 turnsValue.textContent = turnsRange.value;
 checkConnection();
-
