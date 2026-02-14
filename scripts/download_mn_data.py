@@ -1,35 +1,30 @@
-"""Download and cache MN provider CSV data.
-
-This implementation ships with fallback sample data so offline environments can
-run without external network access.
-"""
 from __future__ import annotations
 
-import csv
-from pathlib import Path
+"""Download and cache Minnesota provider data from MN Geospatial Commons."""
 
+from pathlib import Path
+import sys
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from tools.providers import refresh_mn_provider_cache
 from config import DATA_DIR
 
 
-MN_SOURCE_URL = "https://gisdata.mn.gov/dataset/health-child-care-providers"
-LOCAL_TARGET = DATA_DIR / "mn_providers.csv"
+MN_TARGET = DATA_DIR / "mn_providers_live.csv"
 
 
 def run() -> None:
-    # Keep existing data if user already added an updated source file.
-    if LOCAL_TARGET.exists():
-        print(f"Using existing cache at {LOCAL_TARGET}")
-        return
-    print(f"MN source unavailable in offline mode; keeping bundled fallback at {LOCAL_TARGET}")
-    if not LOCAL_TARGET.exists():
-        raise FileNotFoundError(f"Expected fallback provider dataset at {LOCAL_TARGET}")
+    providers = refresh_mn_provider_cache()
+    print(f"Loaded {len(providers)} MN provider records into {MN_TARGET}")
 
 
 def main() -> None:
     run()
-    print(f"Done. Source: {MN_SOURCE_URL}")
+    print("Done. Source: https://gisdata.mn.gov/dataset/health-child-care-providers")
 
 
 if __name__ == "__main__":
     main()
-

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import csv
+import requests
 from pathlib import Path
 from typing import Any, Dict, List
 
 from config import DATA_DIR
+
+
+def _normalize(value: str | None) -> str:
+    return str(value or "").strip().lower()
 
 
 def _read_rows() -> List[Dict[str, str]]:
@@ -13,6 +18,34 @@ def _read_rows() -> List[Dict[str, str]]:
         return []
     with path.open(encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
+
+
+def _live_registration_probe(state: str, name: str) -> Dict[str, Any] | None:
+    state_key = (state or "").upper()
+    target = _normalize(name)
+    if state_key == "IL":
+        endpoint = "https://www.cyberdriveillinois.com/corpservices/api/entitysearch?searchstring=" + target
+        try:
+            response = requests.get(endpoint, timeout=10)
+            if response.status_code >= 200 and response.status_code < 500:
+                return {
+                    "status": "live_available_not_parsed",
+                    "note": "cyberdriveillinois endpoint reachable; parser is not implemented in this environment.",
+                }
+        except Exception:
+            return None
+    elif state_key == "MN":
+        endpoint = "https://mblsportal.sos.state.mn.us/Business/search/" + target.replace(" ", "%20")
+        try:
+            response = requests.get(endpoint, timeout=10)
+            if response.status_code >= 200 and response.status_code < 500:
+                return {
+                    "status": "live_available_not_parsed",
+                    "note": "MN SOS endpoint reachable; parser is not implemented in this environment.",
+                }
+        except Exception:
+            return None
+    return None
 
 
 def check_business_registration(
@@ -24,7 +57,7 @@ def check_business_registration(
         return {"status": "error", "error": "name is required"}
 
     rows = _read_rows()
-    needle = name.lower()
+    needle = _normalize(name)
     state_key = (state or "").upper()
     matches = []
 
@@ -48,6 +81,15 @@ def check_business_registration(
             )
 
     if not matches:
+        live_probe = _live_registration_probe(state_key, name)
+        if live_probe:
+            return {
+                "status": "not_found",
+                "state": state_key,
+                "search_type": search_type,
+                "results": [],
+                "live_probe": live_probe,
+            }
         return {
             "status": "not_found",
             "query": name,
@@ -57,4 +99,3 @@ def check_business_registration(
         }
 
     return matches if search_type == "agent" else {"status": "found", "results": matches}
-
