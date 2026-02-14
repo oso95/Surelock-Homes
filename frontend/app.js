@@ -1,4 +1,4 @@
-const runBtn = document.getElementById("runBtn");
+ï»¿const runBtn = document.getElementById("runBtn");
 const queryInput = document.getElementById("query");
 const offlineToggle = document.getElementById("offlineToggle");
 const turnsRange = document.getElementById("turnsRange");
@@ -123,7 +123,7 @@ function buildFlagCard(flag, index) {
       <h4>${escapeHtml(index + 1)}. ${escapeHtml(name)}</h4>
       <span class="chip chip--warn">Potential mismatch</span>
     </div>
-    <p class="result-meta">${escapeHtml(addr)} ¡E ${escapeHtml(details.state)}</p>
+    <p class="result-meta">${escapeHtml(addr)} , ${escapeHtml(details.state)}</p>
     <ul class="mini-meta">
       <li>Licensed capacity: ${escapeHtml(details.licensed_capacity)}</li>
       <li>Max legal capacity: ${escapeHtml(details.max_legal_capacity)}</li>
@@ -322,7 +322,7 @@ runBtn.addEventListener("click", async () => {
   }
 
   runBtn.disabled = true;
-  runBtn.textContent = "Running¡K";
+  runBtn.textContent = "Runningâ€¦";
   runMessage.textContent = "Starting investigation...";
   copyJsonBtn.disabled = true;
 
@@ -365,3 +365,4 @@ copyJsonBtn.addEventListener("click", async () => {
 
 turnsValue.textContent = turnsRange.value;
 checkConnection();
+
