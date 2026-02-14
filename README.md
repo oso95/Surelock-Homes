@@ -80,6 +80,15 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+Set `LLM_PROVIDER` to `anthropic` or `openrouter`.
+When using OpenRouter:
+
+```bash
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=...
+MODEL=anthropic/claude-opus-4-6
+```
+
 4. Start the API:
 
 ```bash
@@ -126,4 +135,3 @@ These scripts are defensive and will create/refresh local cache files, using the
 - The implementation is fully functional without external API keys by using local fallback datasets.
 - When keys are provided, tool wrappers can call real Google/Anthropic endpoints.
 - This is a functional MVP matching the provided spec and includes all required modules for extension.
-

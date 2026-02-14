@@ -6,11 +6,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import json
+from urllib.parse import urljoin
 
 try:
     import anthropic
 except Exception:  # pragma: no cover - optional dependency path
     anthropic = None
+
+try:
+    import requests
+except Exception:  # pragma: no cover - optional dependency path
+    requests = None
 
 from config import OUTPUT_DIR, load_settings
 from agent.narration import InvestigationNarration
@@ -50,6 +56,22 @@ def _normalize_blocks(content: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _to_openrouter_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    converted: List[Dict[str, Any]] = []
+    for tool in tool_defs:
+        converted.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {}),
+                },
+            }
+        )
+    return converted
+
+
 def _call_tool(name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     handler_map = {
         "search_childcare_providers": search_childcare_providers,
@@ -69,6 +91,123 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         return "ok", result
     except Exception as exc:
         return "error", {"error": str(exc)}
+
+
+def _run_openrouter_investigation(
+    query: str,
+    max_turns: int,
+    model: str,
+    settings: Any,
+) -> Dict[str, Any]:
+    if requests is None:
+        raise RuntimeError("requests is required for OpenRouter calls.")
+
+    url = urljoin(settings.openrouter_base_url.rstrip("/") + "/", "chat/completions")
+    tool_defs = get_tool_definitions()
+    openrouter_tools = _to_openrouter_tools(tool_defs)
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": load_system_prompt()},
+        {"role": "user", "content": query},
+    ]
+    tool_calls: List[Dict[str, Any]] = []
+    raw_turns: List[Dict[str, Any]] = []
+    thinking_blocks: List[str] = []
+    narration = InvestigationNarration(query=query)
+    assistant_text: List[str] = []
+
+    for turn in range(1, max_turns + 1):
+        request_payload = {
+            "model": model,
+            "messages": messages,
+            "tools": openrouter_tools,
+            "tool_choice": "auto",
+        }
+        resp = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {settings.openrouter_api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": settings.openrouter_site_url,
+                "X-Title": settings.openrouter_app_name,
+            },
+            json=request_payload,
+            timeout=settings.tool_timeout_seconds,
+        )
+        if not resp.ok:
+            raise RuntimeError(f"OpenRouter request failed: {resp.status_code} {resp.text}")
+
+        completion = resp.json()
+        choice = completion.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        finish_reason = choice.get("finish_reason")
+        assistant_text_block = message.get("content", "")
+        tool_calls_block = message.get("tool_calls", [])
+
+        turn_summary = {"turn": turn, "assistant": "", "tool_results": []}
+        if assistant_text_block:
+            turn_summary["assistant"] = str(assistant_text_block).strip()
+            narration.add_narration(str(assistant_text_block))
+            narration.add_assistant_text(str(assistant_text_block))
+            assistant_text.append(str(assistant_text_block))
+
+        assistant_history_entry = {"role": "assistant", "content": assistant_text_block or ""}
+        if tool_calls_block:
+            assistant_history_entry["tool_calls"] = tool_calls_block
+        messages.append(assistant_history_entry)
+
+        if not tool_calls_block:
+            raw_turns.append(turn_summary)
+            break
+
+        for tool_call in tool_calls_block:
+            tool_name = (tool_call.get("function") or {}).get("name")
+            raw_arguments = (tool_call.get("function") or {}).get("arguments", "{}")
+            if isinstance(raw_arguments, str):
+                try:
+                    arguments = json.loads(raw_arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+            elif isinstance(raw_arguments, dict):
+                arguments = raw_arguments
+            else:
+                arguments = {}
+            if not tool_name:
+                continue
+            tool_status, result = _call_tool(tool_name, arguments)
+            tool_calls.append({"tool": tool_name, "arguments": arguments, "status": tool_status, "result": result})
+            narration.add_tool_call(tool_name, arguments, result)
+            thinking_blocks.append(f"tool:{tool_name}")
+            turn_summary["tool_results"].append({"tool": tool_name, "result": result, "status": tool_status})
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.get("id"),
+                    "name": tool_name,
+                    "content": json.dumps(result),
+                }
+            )
+
+        raw_turns.append(turn_summary)
+
+        if finish_reason in {"stop", "tool_calls"} and not tool_calls_block:
+            break
+
+        if finish_reason == "stop" and not any(tc.get("function") for tc in tool_calls_block):
+            break
+
+    return {
+        "query": query,
+        "mode": "agent",
+        "status": "complete",
+        "turns": len(raw_turns),
+        "provider_count": 0,
+        "flagged": [],
+        "narration": narration.to_markdown(),
+        "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
+        "tool_calls": tool_calls,
+        "thinking": thinking_blocks,
+        "raw_turns": raw_turns,
+    }
 
 
 def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
@@ -204,82 +343,97 @@ def run_investigation(
     settings = load_settings()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-    if offline or not settings.anthropic_api_key or anthropic is None:
+    if offline:
         result = _offline_investigation(query, max_turns=max_turns)
         if save_output:
             _persist_investigation(run_id, result, output_dir=output_dir)
         return result
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    narration = InvestigationNarration(query=query)
-    messages = [{"role": "user", "content": query}]
-    tool_defs = get_tool_definitions()
-    tool_calls = []
-    raw_turns = []
-    assistant_text = []
-    thinking_blocks: List[str] = []
-
-    for turn in range(1, max_turns + 1):
-        response = client.messages.create(
+    if settings.llm_provider == "openrouter":
+        if not settings.openrouter_api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter.")
+        result = _run_openrouter_investigation(
+            query,
+            max_turns=max_turns,
             model=model or settings.model,
-            max_tokens=settings.max_tokens,
-            thinking={"type": "enabled", "budget_tokens": settings.thinking_budget_tokens},
-            system=load_system_prompt(),
-            tools=tool_defs,
-            messages=messages,
+            settings=settings,
         )
-        content_blocks = _normalize_blocks(response.content)
-        assistant_payload: List[Dict[str, Any]] = []
-        turn_tool_results = []
-        turn_summary = {"turn": turn, "assistant": "", "tool_results": []}
+    elif settings.llm_provider == "anthropic":
+        if not settings.anthropic_api_key or anthropic is None:
+            raise RuntimeError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic.")
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        narration = InvestigationNarration(query=query)
+        messages = [{"role": "user", "content": query}]
+        tool_defs = get_tool_definitions()
+        tool_calls = []
+        raw_turns = []
+        assistant_text = []
+        thinking_blocks: List[str] = []
 
-        for block in content_blocks:
-            block_type = block.get("type")
-            if block_type == "thinking":
-                thought = block.get("thinking", "")
-                narration.add_thinking(thought)
-                thinking_blocks.append(thought)
-            elif block_type == "text":
-                text = block.get("text", "")
-                assistant_payload.append(block)
-                narration.add_narration(text)
-                narration.add_assistant_text(text)
-                assistant_text.append(text)
-                turn_summary["assistant"] = (turn_summary["assistant"] + " " + text).strip()
-            elif block_type == "tool_use":
-                assistant_payload.append(block)
-                tool_name = block.get("name")
-                arguments = block.get("input", {})
-                tool_status, result = _call_tool(tool_name, arguments)
-                tool_calls.append({"tool": tool_name, "arguments": arguments, "status": tool_status, "result": result})
-                narration.add_tool_call(tool_name, arguments, result)
-                turn_tool_results.append({"tool": tool_name, "result": result, "status": tool_status})
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_use_id": block.get("id"),
-                        "content": json.dumps(result),
-                    }
-                )
+        for turn in range(1, max_turns + 1):
+            response = client.messages.create(
+                model=model or settings.model,
+                max_tokens=settings.max_tokens,
+                thinking={"type": "enabled", "budget_tokens": settings.thinking_budget_tokens},
+                system=load_system_prompt(),
+                tools=tool_defs,
+                messages=messages,
+            )
+            content_blocks = _normalize_blocks(response.content)
+            assistant_payload: List[Dict[str, Any]] = []
+            turn_tool_results = []
+            turn_summary = {"turn": turn, "assistant": "", "tool_results": []}
 
-        messages.append({"role": "assistant", "content": assistant_payload})
-        raw_turns.append(turn_summary)
-        if getattr(response, "stop_reason", None) == "end_turn":
-            break
+            for block in content_blocks:
+                block_type = block.get("type")
+                if block_type == "thinking":
+                    thought = block.get("thinking", "")
+                    narration.add_thinking(thought)
+                    thinking_blocks.append(thought)
+                elif block_type == "text":
+                    text = block.get("text", "")
+                    assistant_payload.append(block)
+                    narration.add_narration(text)
+                    narration.add_assistant_text(text)
+                    assistant_text.append(text)
+                    turn_summary["assistant"] = (turn_summary["assistant"] + " " + text).strip()
+                elif block_type == "tool_use":
+                    assistant_payload.append(block)
+                    tool_name = block.get("name")
+                    arguments = block.get("input", {})
+                    tool_status, result = _call_tool(tool_name, arguments)
+                    tool_calls.append({"tool": tool_name, "arguments": arguments, "status": tool_status, "result": result})
+                    narration.add_tool_call(tool_name, arguments, result)
+                    turn_tool_results.append({"tool": tool_name, "result": result, "status": tool_status})
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_use_id": block.get("id"),
+                            "content": json.dumps(result),
+                        }
+                    )
 
-    result = {
-        "query": query,
-        "mode": "agent",
-        "status": "complete",
-        "turns": len(raw_turns),
-        "provider_count": 0,
-        "flagged": [],
-        "narration": narration.to_markdown(),
-        "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
-        "tool_calls": tool_calls,
-        "thinking": thinking_blocks,
-        "raw_turns": raw_turns,
-    }
+            messages.append({"role": "assistant", "content": assistant_payload})
+            raw_turns.append(turn_summary)
+            if getattr(response, "stop_reason", None) == "end_turn":
+                break
+
+        result = {
+            "query": query,
+            "mode": "agent",
+            "status": "complete",
+            "turns": len(raw_turns),
+            "provider_count": 0,
+            "flagged": [],
+            "narration": narration.to_markdown(),
+            "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
+            "tool_calls": tool_calls,
+            "thinking": thinking_blocks,
+            "raw_turns": raw_turns,
+        }
+    else:
+        raise RuntimeError(f"Unknown LLM_PROVIDER '{settings.llm_provider}'. Set LLM_PROVIDER=anthropic or openrouter.")
+
     if save_output:
         _persist_investigation(run_id, result, output_dir=output_dir)
     return result
@@ -298,4 +452,3 @@ if __name__ == "__main__":
     args = parse_args()
     output = run_investigation(args.query, offline=args.offline, max_turns=args.max_turns, save_output=not args.no_save)
     print(json.dumps(output, indent=2))
-

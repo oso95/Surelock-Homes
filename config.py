@@ -33,6 +33,11 @@ def _env_int(name: str, default: int) -> int:
 class Settings:
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     google_maps_api_key: str = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    openrouter_site_url: str = os.getenv("OPENROUTER_SITE_URL", "http://localhost:8000")
+    openrouter_app_name: str = os.getenv("OPENROUTER_APP_NAME", "Surelock Homes")
+    llm_provider: str = os.getenv("LLM_PROVIDER", "anthropic")
     model: str = os.getenv("MODEL", "claude-opus-4-6-20250514")
     thinking_budget_tokens: int = _env_int("THINKING_BUDGET_TOKENS", 10000)
     max_tokens: int = _env_int("MAX_TOKENS", 16000)
@@ -40,9 +45,9 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    return Settings()
+    provider = os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
+    return Settings(llm_provider=provider)
 
 
 def current_utc_date() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
