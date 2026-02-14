@@ -36,15 +36,6 @@ def _read_csv(path: Path) -> List[Dict[str, str]]:
         return [dict(row) for row in reader]
 
 
-def _coalesce_float(value: object, default: float = 0.0) -> float:
-    try:
-        if value is None or str(value).strip() == "":
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
 def _coalesce_int(value: object, default: int = 0) -> int:
     try:
         if value is None:
@@ -171,34 +162,27 @@ def _load_mn_live_records() -> List[Dict[str, Any]]:
 
 def _parse_dcfs_rows_from_payload(payload: str) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
-    for line in payload.splitlines():
-        line = line.strip()
-        if not line.startswith('"'):
-            continue
-        if not re.match(r"^\"\\d{6}\",", line):
-            continue
-        try:
-            parsed = next(csv.reader([line], strict=True))
-        except Exception:
-            continue
+    for parsed in csv.reader(io.StringIO(payload)):
         if len(parsed) < 17:
+            continue
+        if not re.match(r"^\d{6}$", str(parsed[0]).strip()):
             continue
         rows.append(
             {
-                "license_number": parsed[0],
-                "name": parsed[1],
-                "address": parsed[2],
-                "city": parsed[3],
-                "county": parsed[4],
-                "zip": parsed[5],
-                "phone": parsed[6],
-                "license_type": parsed[7],
-                "age_range": parsed[8],
-                "unused_lang_1": parsed[9],
-                "language_1": parsed[10],
-                "language_2": parsed[11],
-                "status": parsed[16],
-                "capacity": parsed[14],
+                "license_number": str(parsed[0]).strip(),
+                "name": str(parsed[1]).strip(),
+                "address": str(parsed[2]).strip(),
+                "city": str(parsed[3]).strip(),
+                "county": str(parsed[4]).strip(),
+                "zip": str(parsed[5]).strip(),
+                "phone": str(parsed[6]).strip(),
+                "license_type": str(parsed[7]).strip(),
+                "age_range": str(parsed[8]).strip(),
+                "unused_lang_1": str(parsed[9]).strip(),
+                "language_1": str(parsed[10]).strip(),
+                "language_2": str(parsed[11]).strip(),
+                "status": str(parsed[16]).strip(),
+                "capacity": str(parsed[14]).strip(),
             }
         )
     return rows
