@@ -417,6 +417,146 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
     }
 
 
+def _offline_investigation_stream(query: str, max_turns: int = 8):
+    """Generator yielding SSE-friendly dicts as the investigation progresses."""
+    import re as _re
+
+    lower = query.lower()
+    state = "IL" if "il" in lower or "illinois" in lower else "MN"
+    state = "MN" if "mn" in lower or "minnesota" in lower else state
+    zip_code = None
+    zip_match = _re.search(r"\b\d{5}\b", query)
+    if zip_match:
+        zip_code = zip_match.group(0)
+
+    yield {"event": "start", "query": query, "state": state, "zip": zip_code}
+
+    narration = InvestigationNarration(query=query)
+    providers = search_childcare_providers(state=state, zip=zip_code)
+
+    yield {"event": "providers_loaded", "count": len(providers)}
+
+    if not providers:
+        narration.add_narration("No providers were returned for the requested area with local fallback data.")
+        yield {
+            "event": "complete",
+            "payload": {
+                "query": query, "mode": "offline", "status": "complete",
+                "provider_count": 0, "flagged": [], "turns": 1,
+                "narration": narration.to_markdown(),
+                "assistant_text": "No providers found in fallback dataset.",
+                "tool_calls": [], "thinking": [], "raw_turns": [
+                    {"turn": 1, "assistant": "No providers found in area.", "tools": []}
+                ],
+            },
+        }
+        return
+
+    flagged = []
+    raw_turns = []
+    tool_calls = []
+    total = min(len(providers), max_turns)
+
+    for idx, provider in enumerate(providers[:max_turns], start=1):
+        name = provider.get("name", "Provider")
+        addr = provider.get("address", "")
+        capacity = int(provider.get("capacity", 0))
+
+        yield {"event": "provider_start", "turn": idx, "total": total, "name": name, "address": addr}
+
+        property_data = get_property_data(addr, state=state, offline=True)
+        sqft = float(property_data.get("building_sqft", 0) or 0)
+        yield {"event": "tool_result", "turn": idx, "tool": "get_property_data", "sqft": sqft}
+
+        calc = calculate_max_capacity(sqft, state=state, usable_ratio=0.65)
+        yield {"event": "tool_result", "turn": idx, "tool": "calculate_max_capacity", "max_legal": calc["max_legal_capacity"]}
+
+        places = get_places_info(addr)
+        yield {"event": "tool_result", "turn": idx, "tool": "get_places_info"}
+
+        licensing = check_licensing_status(name, state=state, address=addr)
+        yield {"event": "tool_result", "turn": idx, "tool": "check_licensing_status"}
+
+        reg = check_business_registration(name, state=state, search_type="business")
+        yield {"event": "tool_result", "turn": idx, "tool": "check_business_registration"}
+
+        turn_tools = [
+            {"tool": "get_property_data", "input": {"address": addr, "state": state}, "result": property_data},
+            {"tool": "calculate_max_capacity", "input": {"building_sqft": sqft, "state": state}, "result": calc},
+            {"tool": "get_places_info", "input": {"address": addr}, "result": places},
+            {"tool": "check_licensing_status", "input": {"provider_name": name, "state": state, "address": addr}, "result": licensing},
+            {"tool": "check_business_registration", "input": {"name": name, "state": state, "search_type": "business"}, "result": reg},
+        ]
+        tool_calls.extend(turn_tools)
+
+        diff = capacity - calc["max_legal_capacity"]
+        is_flagged = diff > 0
+        if is_flagged:
+            note = {
+                "provider": provider,
+                "licensed_capacity": capacity,
+                "max_legal_capacity": calc["max_legal_capacity"],
+                "excess_capacity": diff,
+                "building_sqft": sqft,
+                "property_data": property_data,
+                "places": places,
+                "licensing": licensing,
+                "business_registration": reg,
+                "flags": [
+                    "licensed capacity exceeds physical maximum",
+                    "visually inconsistent if place data has low confidence score",
+                ],
+            }
+            flagged.append(note)
+            narration.add_narration(
+                f"{name} at {addr} shows suspicious capacity math: "
+                f"licensed {capacity} > max legal {calc['max_legal_capacity']}."
+            )
+
+        raw_turns.append({
+            "turn": idx,
+            "provider": name,
+            "tools": turn_tools,
+            "flagged": is_flagged,
+        })
+
+        yield {
+            "event": "provider_done",
+            "turn": idx,
+            "total": total,
+            "name": name,
+            "flagged": is_flagged,
+            "licensed": capacity,
+            "max_legal": calc["max_legal_capacity"],
+            "total_flags": len(flagged),
+        }
+
+    summary_lines = [
+        f"Investigated {len(providers)} provider records for state {state}.",
+        f"Potential physical anomalies: {len(flagged)}",
+    ]
+    if flagged:
+        summary_lines.append("The most likely issues involve capacity versus building size.")
+    summary = " ".join(summary_lines)
+
+    yield {
+        "event": "complete",
+        "payload": {
+            "query": query,
+            "mode": "offline",
+            "status": "complete",
+            "provider_count": len(providers),
+            "flagged": flagged,
+            "turns": total,
+            "narration": narration.to_markdown(),
+            "assistant_text": summary,
+            "tool_calls": tool_calls,
+            "thinking": ["Offline deterministic reasoning mode used for stable results."],
+            "raw_turns": raw_turns,
+        },
+    }
+
+
 def _persist_investigation(run_id: str, payload: Dict[str, Any], output_dir: Path | None = None) -> None:
     if output_dir is None:
         return

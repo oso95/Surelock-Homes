@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import json
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from agent.loop import run_investigation
+from agent.loop import run_investigation, _offline_investigation_stream
 from config import FRONTEND_DIR
 from tools.definitions import get_tool_definitions
 
@@ -85,6 +86,26 @@ def investigate(payload: InvestigateRequest, request: Request) -> Any:
         payload.query,
         max_turns=payload.max_turns,
         offline=payload.offline,
+    )
+
+
+def _sse_generator(query: str, max_turns: int) -> Generator[str, None, None]:
+    for event in _offline_investigation_stream(query, max_turns=max_turns):
+        yield f"data: {json.dumps(event, default=str)}\n\n"
+
+
+@app.post("/api/investigate/stream")
+def investigate_stream(payload: InvestigateRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    if _is_rate_limited(client_ip):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Try again later."},
+        )
+    return StreamingResponse(
+        _sse_generator(payload.query, payload.max_turns),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

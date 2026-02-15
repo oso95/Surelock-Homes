@@ -323,8 +323,11 @@ function buildFlagCard(flag, index) {
     (Number.isFinite(Number(licensed)) && Number.isFinite(Number(maxLegal))
       ? Math.max(0, Number(licensed) - Number(maxLegal))
       : "N/A");
+  const city = provider.city || "";
+  const zip = provider.zip || "";
   const state = provider.state || "unknown";
   const source = provider.source || "local";
+  const fullAddr = [addr, city, state, zip].filter(Boolean).join(", ");
 
   card.innerHTML = `
     <div class="flag-card__header">
@@ -332,8 +335,7 @@ function buildFlagCard(flag, index) {
       <span class="flag-card__flagged">Flagged</span>
     </div>
     <dl class="flag-card__meta">
-      <dt>Address</dt><dd>${escapeHtml(addr)}</dd>
-      <dt>State</dt><dd>${escapeHtml(state)}</dd>
+      <dt>Address</dt><dd>${escapeHtml(fullAddr)}</dd>
       <dt>Licensed</dt><dd>${escapeHtml(licensed)}</dd>
       <dt>Max legal</dt><dd>${escapeHtml(maxLegal)}</dd>
       <dt>Excess</dt><dd>${escapeHtml(excess)}</dd>
@@ -531,7 +533,32 @@ async function checkConnection() {
 }
 
 /* ==========================================================================
-   Investigation Runner
+   Streaming Activity Log
+   ========================================================================== */
+
+const loadingStatus = document.getElementById("loadingStatus");
+const progressFill = document.getElementById("progressFill");
+const activityLog = document.getElementById("activityLog");
+
+function addActivity(icon, text, className) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="activity-log__icon">${icon}</span><span class="activity-log__text ${className || ""}">${escapeHtml(text)}</span>`;
+  activityLog.appendChild(li);
+  activityLog.scrollTop = activityLog.scrollHeight;
+}
+
+function setProgress(pct) {
+  progressFill.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+}
+
+function resetStream() {
+  activityLog.innerHTML = "";
+  setProgress(0);
+  loadingStatus.textContent = "Starting investigation\u2026";
+}
+
+/* ==========================================================================
+   Investigation Runner (SSE Streaming)
    ========================================================================== */
 
 runBtn.addEventListener("click", async () => {
@@ -541,38 +568,138 @@ runBtn.addEventListener("click", async () => {
     return;
   }
 
+  const isOffline = !offlineToggle.checked;
+
   runBtn.disabled = true;
   runBtn.textContent = "Running\u2026";
   copyJsonBtn.disabled = true;
   setStatusText("Starting investigation...");
+  resetStream();
   showLoading();
 
-  try {
-    const response = await fetch("/api/investigate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        query,
-        offline: !offlineToggle.checked,
-        max_turns: Number(turnsRange.value),
-      }),
-    });
+  // Use streaming endpoint for offline mode, regular for online
+  if (isOffline) {
+    try {
+      const response = await fetch("/api/investigate/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          offline: true,
+          max_turns: Number(turnsRange.value),
+        }),
+      });
 
-    const payload = await response.json();
-    lastPayload = payload;
-    renderPayload(payload);
-    setStatusText(`Completed (${payload.status || "ok"})`);
-  } catch (error) {
-    showResults();
-    setStatusText("Investigation failed. Check network/backend.", true);
-    jsonPayload.textContent = formatCode({
-      error: String(error),
-      status: "frontend_request_failed",
-    });
-    copyJsonBtn.disabled = false;
-  } finally {
-    runBtn.disabled = false;
-    runBtn.textContent = "Run Investigation";
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const line = part.replace(/^data: /, "").trim();
+          if (!line) continue;
+
+          let event;
+          try { event = JSON.parse(line); } catch { continue; }
+
+          switch (event.event) {
+            case "start":
+              loadingStatus.textContent = `Investigating ${event.state} ${event.zip || ""}`;
+              addActivity("\u{1F50D}", `Query: ${event.query}`, "");
+              addActivity("\u{1F4CD}", `Target: ${event.state} ${event.zip || "all areas"}`, "activity-log__text--muted");
+              break;
+
+            case "providers_loaded":
+              addActivity("\u{1F4CB}", `${event.count} providers found`, "");
+              setProgress(5);
+              break;
+
+            case "provider_start":
+              loadingStatus.textContent = `Checking ${event.name} (${event.turn}/${event.total})`;
+              addActivity("\u{1F3E2}", `[${event.turn}/${event.total}] ${event.name} - ${event.address}`, "");
+              break;
+
+            case "tool_result":
+              addActivity("\u{2699}\u{FE0F}", `  ${event.tool}${event.sqft !== undefined ? ` (${event.sqft} sqft)` : ""}${event.max_legal !== undefined ? ` (max: ${event.max_legal})` : ""}`, "activity-log__text--muted");
+              break;
+
+            case "provider_done": {
+              const pct = 5 + (event.turn / event.total) * 90;
+              setProgress(pct);
+              if (event.flagged) {
+                addActivity("\u{1F6A9}", `  FLAGGED: licensed ${event.licensed} > max legal ${event.max_legal}`, "activity-log__flag");
+              } else {
+                addActivity("\u2705", `  OK`, "activity-log__text--muted");
+              }
+              break;
+            }
+
+            case "complete":
+              setProgress(100);
+              loadingStatus.textContent = "Investigation complete";
+              addActivity("\u{1F3C1}", `Done - ${event.payload.flagged?.length || 0} flags found`, "");
+              lastPayload = event.payload;
+              // Brief delay so user can see the completion log
+              await new Promise(r => setTimeout(r, 600));
+              renderPayload(event.payload);
+              setStatusText(`Completed (${event.payload.status || "ok"})`);
+              break;
+          }
+        }
+      }
+    } catch (error) {
+      showResults();
+      setStatusText("Investigation failed. Check network/backend.", true);
+      jsonPayload.textContent = formatCode({
+        error: String(error),
+        status: "frontend_request_failed",
+      });
+      copyJsonBtn.disabled = false;
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run Investigation";
+    }
+  } else {
+    // Online mode: regular non-streaming request
+    try {
+      const response = await fetch("/api/investigate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          offline: false,
+          max_turns: Number(turnsRange.value),
+        }),
+      });
+
+      const payload = await response.json();
+      lastPayload = payload;
+      renderPayload(payload);
+      setStatusText(`Completed (${payload.status || "ok"})`);
+    } catch (error) {
+      showResults();
+      setStatusText("Investigation failed. Check network/backend.", true);
+      jsonPayload.textContent = formatCode({
+        error: String(error),
+        status: "frontend_request_failed",
+      });
+      copyJsonBtn.disabled = false;
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = "Run Investigation";
+    }
   }
 });
 

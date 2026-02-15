@@ -64,10 +64,14 @@
           <p>Enter a query and click <strong>Run Investigation</strong> to begin.</p>
         </div>
 
-        <!-- Loading state (hidden by default) -->
-        <div id="loadingState" class="loading-state" hidden>
-          <div class="loading-spinner"></div>
-          <p>Running investigation&hellip;</p>
+        <!-- Streaming/loading state (hidden by default) -->
+        <div id="loadingState" class="streaming-state" hidden>
+          <div class="streaming-header">
+            <div class="loading-spinner"></div>
+            <p id="loadingStatus">Starting investigation&hellip;</p>
+          </div>
+          <div class="progress-bar"><div id="progressFill" class="progress-bar__fill"></div></div>
+          <ul id="activityLog" class="activity-log"></ul>
         </div>
 
         <!-- Results (hidden until first run completes) -->
