@@ -103,6 +103,12 @@ def _parse_address(address: str) -> Dict[str, str]:
     return {"house": number, "direction": direction, "street": street, "suffix": suffix}
 
 
+def _sanitize_arcgis_value(value: str) -> str:
+    sanitized = value.replace("'", "''")
+    sanitized = re.sub(r"[^A-Za-z0-9 \-.]", "", sanitized)
+    return sanitized
+
+
 def _read_csv(path: Path) -> List[Dict[str, str]]:
     if not path.exists():
         return []
@@ -116,9 +122,12 @@ def _query_hennepin(address: str) -> Dict[str, Any]:
     if "house" not in parsed or "street" not in parsed:
         return {}
 
-    where = [f"HOUSE_NO={parsed['house']}", f"upper(STREET_NM) LIKE '{parsed['street']}%'"]
+    house = _sanitize_arcgis_value(parsed["house"])
+    street = _sanitize_arcgis_value(parsed["street"])
+    where = [f"HOUSE_NO={house}", f"upper(STREET_NM) LIKE '{street}%'"]
     if parsed.get("suffix"):
-        where.append(f"upper(STREET_NM) LIKE '% {parsed['suffix']}'")
+        suffix = _sanitize_arcgis_value(parsed["suffix"])
+        where.append(f"upper(STREET_NM) LIKE '% {suffix}'")
 
     params = {
         "where": " AND ".join(where),
@@ -159,11 +168,15 @@ def _query_cook(address: str) -> Dict[str, Any]:
     if "house" not in parsed or "street" not in parsed:
         return {}
 
-    where = [f"HouseNo='{parsed['house']}'", f"upper(Street) LIKE '{parsed['street']}%'"]
+    house = _sanitize_arcgis_value(parsed["house"])
+    street = _sanitize_arcgis_value(parsed["street"])
+    where = [f"HouseNo='{house}'", f"upper(Street) LIKE '{street}%'"]
     if parsed.get("suffix"):
-        where.append(f"upper(Suffix)='{parsed['suffix']}'")
+        suffix = _sanitize_arcgis_value(parsed["suffix"])
+        where.append(f"upper(Suffix)='{suffix}'")
     if parsed.get("direction"):
-        where.append(f"upper(Dir)='{parsed['direction']}'")
+        direction = _sanitize_arcgis_value(parsed["direction"])
+        where.append(f"upper(Dir)='{direction}'")
 
     params = {
         "where": " AND ".join(where),
@@ -198,6 +211,7 @@ def get_property_data(
     address: str,
     county: str | None = None,
     state: str | None = None,
+    offline: bool = False,
 ) -> Dict[str, Any]:
     if not address:
         return {"status": "error", "error": "address is required"}
@@ -205,7 +219,7 @@ def get_property_data(
     state_key = (state or "").upper()
     normalized_target = _normalize_addr(address)
 
-    if state_key == "MN":
+    if not offline and state_key == "MN":
         live = _query_hennepin(address)
         if live:
             return {
@@ -220,7 +234,7 @@ def get_property_data(
                 "county": county or "Hennepin",
                 "state": "MN",
             }
-    elif state_key == "IL":
+    elif not offline and state_key == "IL":
         live = _query_cook(address)
         if live:
             return {

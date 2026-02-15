@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
 import requests
 
 from config import DATA_DIR, load_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _cache_path(address: str) -> Path:
@@ -82,9 +85,10 @@ def get_street_view(
                 }
             )
     except Exception as exc:
+        logger.warning("Street View API call failed for %s", address, exc_info=True)
         return {
             "status": "error",
-            "error": str(exc),
+            "error": "Street View lookup failed",
             "address": address,
             "images": _fallback_images(address, headings, size),
         }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import re
 import zipfile
 from datetime import datetime, timezone, timedelta
@@ -13,6 +14,8 @@ from bs4 import BeautifulSoup
 import shapefile
 
 from config import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 
 MN_SHAPE_URL = "https://resources.gisdata.mn.gov/pub/gdrs/data/pub/us_mn_state_mngeo/econ_child_care/shp_econ_child_care.zip"
@@ -249,11 +252,13 @@ def search_childcare_providers(
         try:
             records = _load_mn_live_records()
         except Exception:
+            logger.warning("Failed to load MN live records, using fallback", exc_info=True)
             records = _get_fallback_records(state_key)
     elif state_key == "IL":
         try:
             records = _load_il_live_records()
         except Exception:
+            logger.warning("Failed to load IL live records, using fallback", exc_info=True)
             records = _get_fallback_records(state_key)
     else:
         records = []

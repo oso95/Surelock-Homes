@@ -1,134 +1,166 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Surelock Homes | Investigative Command</title>
+    <title>Surelock Homes | Investigation Dashboard</title>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
-    <div class="page">
-      <header class="topbar">
-        <p class="eyebrow">Fraud Detection Research Console</p>
-        <h1>Surelock Homes</h1>
-        <p class="subtitle">Run reproducible investigations and inspect model thinking + tool evidence.</p>
-      </header>
+    <header class="header" role="banner">
+      <div class="header__inner">
+        <div class="header__brand">
+          <h1 class="header__title">Surelock Homes</h1>
+          <span class="header__tagline">Fraud Detection Research Console</span>
+        </div>
+        <span id="connectionStatus" class="status-badge status-badge--checking" role="status" aria-live="polite">Checking&hellip;</span>
+      </div>
+    </header>
 
-      <main class="layout">
-        <section class="panel controls-panel">
-          <div class="panel-header">
-            <h2>Investigation Request</h2>
-            <span id="connectionStatus" class="chip chip--warning">Backend: checking...</span>
-          </div>
-          <label for="query">Prompt</label>
-          <textarea id="query" rows="5" placeholder="Investigate providers in ZIP 60612 and return all anomalies.">Investigate Illinois providers in ZIP 60612</textarea>
+    <div class="shell">
+      <aside class="sidebar" aria-label="Investigation controls">
+        <div class="control-panel">
+          <label for="query" class="control-panel__label">Investigation Prompt</label>
+          <textarea id="query" rows="4" class="control-panel__textarea" placeholder="Investigate providers in ZIP 60612 and return all anomalies.">Investigate Illinois providers in ZIP 60612</textarea>
 
-          <div class="control-grid">
-            <label class="toggle">
-              <input id="offlineToggle" type="checkbox" />
-              Live mode (uncheck for offline deterministic fixtures)
+          <div class="control-row">
+            <label class="toggle-switch" role="switch" aria-checked="false">
+              <input id="offlineToggle" type="checkbox" class="toggle-switch__input" />
+              <span class="toggle-switch__slider"></span>
+              <span class="toggle-switch__label" id="modeHint">Offline mode</span>
             </label>
-            <p id="modeHint" class="toggle-hint">Default: online. Uncheck for offline fixtures.</p>
+          </div>
 
-            <label class="range">
-              Max turns
-              <div class="range-row">
-                <input id="turnsRange" type="range" min="1" max="10" value="5" />
-                <span id="turnsValue">5</span>
+          <div class="control-row">
+            <label class="range-control" for="turnsRange">
+              <span class="range-control__label">Max turns</span>
+              <div class="range-control__row">
+                <input id="turnsRange" type="range" min="1" max="20" value="5" class="range-control__input" />
+                <span id="turnsValue" class="range-control__value">5</span>
               </div>
             </label>
           </div>
 
-          <div class="quick-queries" aria-label="Prompt presets">
-            <button class="chip-btn" type="button" data-query="Investigate Minnesota providers in ZIP 55401">MN ZIP 55401</button>
-            <button class="chip-btn" type="button" data-query="Investigate Illinois providers in ZIP 60612">IL ZIP 60612</button>
-            <button class="chip-btn" type="button" data-query="Investigate Illinois providers in ZIP 60629 with capacity check">IL ZIP 60629</button>
+          <div class="presets" aria-label="Prompt presets">
+            <button class="preset-btn" type="button" data-query="Investigate Minnesota providers in ZIP 55401">MN 55401</button>
+            <button class="preset-btn" type="button" data-query="Investigate Illinois providers in ZIP 60612">IL 60612</button>
+            <button class="preset-btn" type="button" data-query="Investigate Illinois providers in ZIP 60629 with capacity check">IL 60629</button>
           </div>
 
           <div class="actions">
-            <button id="runBtn" type="button">Run Investigation</button>
-            <button id="copyJsonBtn" type="button" class="ghost" disabled>Copy JSON</button>
+            <button id="runBtn" type="button" class="btn btn--primary">Run Investigation</button>
+            <button id="copyJsonBtn" type="button" class="btn btn--ghost" disabled>Copy JSON</button>
           </div>
 
-          <p id="runMessage" class="status-text">Ready.</p>
-        </section>
+          <p id="runMessage" class="status-text" role="status" aria-live="polite">Ready.</p>
+        </div>
+      </aside>
 
-        <section class="panel metrics-panel">
-          <h2>Run Summary</h2>
-          <div class="stats">
-            <div class="stat">
-              <span>Mode</span>
-              <strong id="metricMode">-</strong>
-            </div>
-            <div class="stat">
-              <span>Providers</span>
-              <strong id="metricProviders">-</strong>
-            </div>
-            <div class="stat">
-              <span>Flags</span>
-              <strong id="metricFlags">-</strong>
-            </div>
-            <div class="stat">
-              <span>Turns</span>
-              <strong id="metricTurns">-</strong>
-            </div>
-          </div>
+      <div class="results-area" id="resultsArea">
+        <!-- Empty state shown before first run -->
+        <div id="emptyState" class="empty-state">
+          <div class="empty-state__icon">&#x1F50D;</div>
+          <h2>No Investigation Yet</h2>
+          <p>Enter a query and click <strong>Run Investigation</strong> to begin.</p>
+        </div>
 
-          <h3>Latest Narrative</h3>
-          <p id="metricSummary" class="summary-text">No investigation has been run yet.</p>
-        </section>
+        <!-- Loading state (hidden by default) -->
+        <div id="loadingState" class="loading-state" hidden>
+          <div class="loading-spinner"></div>
+          <p>Running investigation&hellip;</p>
+        </div>
 
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Flags</h2>
-            <span id="flagBadge" class="chip chip--neutral">No data</span>
-          </div>
-          <div id="flagsList" class="card-list">
-            <p class="placeholder">Run an investigation to populate flagged providers.</p>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h2>Agent Thinking / Narration</h2>
-          <div class="split-columns">
-            <div class="mini-panel">
-              <h3>Thinking</h3>
-              <ul id="thinkingList" class="list">
-                <li class="placeholder">No thinking trace.</li>
-              </ul>
+        <!-- Results (hidden until first run completes) -->
+        <div id="resultsContainer" hidden>
+          <!-- KPI Strip -->
+          <section class="section section--summary" aria-label="Run summary">
+            <div class="kpi-strip">
+              <div class="kpi">
+                <span class="kpi__label">Mode</span>
+                <strong class="kpi__value" id="metricMode">-</strong>
+              </div>
+              <div class="kpi">
+                <span class="kpi__label">Providers</span>
+                <strong class="kpi__value" id="metricProviders">-</strong>
+              </div>
+              <div class="kpi kpi--flags">
+                <span class="kpi__label">Flags</span>
+                <strong class="kpi__value" id="metricFlags">-</strong>
+              </div>
+              <div class="kpi">
+                <span class="kpi__label">Turns</span>
+                <strong class="kpi__value" id="metricTurns">-</strong>
+              </div>
             </div>
-            <div class="mini-panel">
-              <h3>Narration</h3>
-              <ul id="narrationList" class="list">
-                <li class="placeholder">No narration yet.</li>
-              </ul>
+          </section>
+
+          <!-- Flags Alert Banner (only shown when flags > 0) -->
+          <section id="flagsAlert" class="flags-alert" hidden aria-label="Flags alert">
+            <span class="flags-alert__icon">&#9888;</span>
+            <span id="flagsAlertText" class="flags-alert__text"></span>
+          </section>
+
+          <!-- AI Analysis — hero section -->
+          <section class="section section--analysis" aria-label="AI analysis">
+            <div class="section__header">
+              <h2 class="section__title">AI Analysis</h2>
+              <span id="narrativeWordCount" class="word-count"></span>
             </div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h2>Execution Timeline</h2>
-          <p class="timeline-subtitle">A chronological view of each investigation step.</p>
-          <div id="timelineList" class="timeline"></div>
-        </section>
-
-        <section class="panel">
-          <h2>Tool Activity</h2>
-          <div id="toolCallList" class="card-list">
-            <p class="placeholder">No tool calls yet.</p>
-          </div>
-        </section>
-
-        <section class="panel">
-          <h2>Raw Evidence</h2>
-          <details>
-            <summary>Open JSON payload</summary>
-            <div class="raw-wrap">
-              <pre id="jsonPayload">{}</pre>
+            <div id="narrativeContent" class="prose">
+              <p class="placeholder">No analysis available.</p>
             </div>
-          </details>
-        </section>
-      </main>
+          </section>
+
+          <!-- AI Thinking Process -->
+          <section class="section section--thinking" aria-label="AI thinking process">
+            <div class="section__header">
+              <h2 class="section__title">Thinking Process</h2>
+              <span id="thinkingBadge" class="badge badge--neutral">0 steps</span>
+            </div>
+            <div id="thinkingList" class="thinking-list">
+              <p class="placeholder">No thinking trace.</p>
+            </div>
+          </section>
+
+          <!-- Flagged Providers -->
+          <section class="section section--flags" aria-label="Flagged providers">
+            <div class="section__header">
+              <h2 class="section__title">Flagged Providers</h2>
+              <span id="flagBadge" class="badge badge--neutral">No flags</span>
+            </div>
+            <div id="flagsList" class="card-grid">
+              <p class="placeholder">No flags were raised.</p>
+            </div>
+          </section>
+
+          <!-- Execution Timeline -->
+          <section class="section section--timeline" aria-label="Execution timeline">
+            <h2 class="section__title">Execution Timeline</h2>
+            <div id="timelineList" class="timeline"></div>
+          </section>
+
+          <!-- Tool Activity -->
+          <section class="section section--tools" aria-label="Tool activity">
+            <div class="section__header">
+              <h2 class="section__title">Tool Calls</h2>
+              <span id="toolCountBadge" class="badge badge--neutral">0</span>
+            </div>
+            <div id="toolCallList" class="card-grid">
+              <p class="placeholder">No tool calls yet.</p>
+            </div>
+          </section>
+
+          <!-- Raw Evidence -->
+          <section class="section section--raw" aria-label="Raw evidence">
+            <details>
+              <summary>Raw JSON Payload</summary>
+              <div class="raw-wrap">
+                <pre id="jsonPayload">{}</pre>
+              </div>
+            </details>
+          </section>
+        </div>
+      </div>
     </div>
 
     <script src="/static/app.js"></script>

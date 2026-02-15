@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from hashlib import sha256
 from typing import Any, Dict
 
 import requests
 
 from config import load_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _stable_coordinate(value: str) -> float:
@@ -49,6 +52,7 @@ def geocode_address(address: str) -> Dict[str, Any]:
                 "place_id": result.get("place_id"),
             }
         except Exception:
+            logger.warning("Geocoding API call failed for %s", address, exc_info=True)
             return {
                 "status": "error",
                 "address": address,

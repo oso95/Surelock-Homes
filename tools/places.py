@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 import requests
 
 from config import load_settings
+
+logger = logging.getLogger(__name__)
 
 
 def get_places_info(address: str) -> Dict[str, Any]:
@@ -53,5 +56,6 @@ def get_places_info(address: str) -> Dict[str, Any]:
             "recent_reviews": detail_payload.get("reviews", [])[:3],
         }
     except Exception as exc:
-        return {"status": "error", "address": address, "error": str(exc)}
+        logger.warning("Google Places API call failed for %s", address, exc_info=True)
+        return {"status": "error", "address": address, "error": "Places lookup failed"}
 

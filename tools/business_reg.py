@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import csv
+import logging
 import requests
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import quote, urlencode
 
 from config import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize(value: str | None) -> str:
@@ -24,7 +28,7 @@ def _live_registration_probe(state: str, name: str) -> Dict[str, Any] | None:
     state_key = (state or "").upper()
     target = _normalize(name)
     if state_key == "IL":
-        endpoint = "https://www.cyberdriveillinois.com/corpservices/api/entitysearch?searchstring=" + target
+        endpoint = "https://www.cyberdriveillinois.com/corpservices/api/entitysearch?" + urlencode({"searchstring": target})
         try:
             response = requests.get(endpoint, timeout=10)
             if response.status_code >= 200 and response.status_code < 500:
@@ -33,9 +37,10 @@ def _live_registration_probe(state: str, name: str) -> Dict[str, Any] | None:
                     "note": "cyberdriveillinois endpoint reachable; parser is not implemented in this environment.",
                 }
         except Exception:
+            logger.warning("IL business registration probe failed", exc_info=True)
             return None
     elif state_key == "MN":
-        endpoint = "https://mblsportal.sos.state.mn.us/Business/search/" + target.replace(" ", "%20")
+        endpoint = "https://mblsportal.sos.state.mn.us/Business/search/" + quote(target, safe="")
         try:
             response = requests.get(endpoint, timeout=10)
             if response.status_code >= 200 and response.status_code < 500:
@@ -44,6 +49,7 @@ def _live_registration_probe(state: str, name: str) -> Dict[str, Any] | None:
                     "note": "MN SOS endpoint reachable; parser is not implemented in this environment.",
                 }
         except Exception:
+            logger.warning("MN business registration probe failed", exc_info=True)
             return None
     return None
 

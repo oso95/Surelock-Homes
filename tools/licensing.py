@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import csv
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict
 
 from config import DATA_DIR
 from tools.providers import _load_il_live_records
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize(value: str | None) -> str:
@@ -36,6 +39,7 @@ def _find_live_il_matches(name: str, address: str | None) -> list[Dict[str, Any]
     try:
         records = _load_il_live_records()
     except Exception:
+        logger.warning("Failed to load IL live records for licensing lookup", exc_info=True)
         return []
 
     for row in records:

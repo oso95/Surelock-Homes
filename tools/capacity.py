@@ -11,6 +11,10 @@ def calculate_max_capacity(
         raise ValueError("state must be MN or IL")
     if usable_ratio <= 0:
         raise ValueError("usable_ratio must be greater than zero")
+    if float(building_sqft) < 0 or float(building_sqft) > 999999:
+        raise ValueError("building_sqft must be between 0 and 999999")
+    if float(usable_ratio) < 0.01 or float(usable_ratio) > 1.0:
+        raise ValueError("usable_ratio must be between 0.01 and 1.0")
 
     sqft_per_child = 35
     usable_sqft = float(building_sqft) * float(usable_ratio)

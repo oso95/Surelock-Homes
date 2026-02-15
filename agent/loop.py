@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import json
 from urllib.parse import urljoin
+
+logger = logging.getLogger(__name__)
 
 try:
     import anthropic
@@ -121,11 +125,25 @@ def _compact_tool_result(value: Any) -> Any:
     return fallback
 
 
+def _sanitize_error(exc: Exception) -> str:
+    logger.warning("Tool execution error: %s", exc, exc_info=True)
+    raw = str(exc)
+    raw = re.sub(r"(/[^\s:]+){2,}", "<path>", raw)
+    raw = re.sub(r"[A-Za-z0-9_\-]{40,}", "<token>", raw)
+    if len(raw) > 200:
+        raw = raw[:200] + "..."
+    return raw
+
+
 def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _OPENROUTER_MAX_CONTEXT_CHARS) -> None:
     if max_chars <= 0:
         return
-    while len(json.dumps(messages, ensure_ascii=False)) > max_chars and len(messages) > 2:
-        messages.pop(1)
+    keep_tail = 4
+    while len(json.dumps(messages, ensure_ascii=False)) > max_chars and len(messages) > (1 + keep_tail + 1):
+        dropped = len(messages) - 1 - keep_tail
+        messages[1:1 + dropped] = [
+            {"role": "user", "content": f"[{dropped} earlier messages removed to fit context budget]"}
+        ]
 
 
 def _to_openrouter_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -157,12 +175,14 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     }
 
     if name not in handler_map:
-        return "error", {"error": f"Tool {name} is not available"}
+        return "error", {"status": "error", "error": f"Tool {name} is not available"}
     try:
         result = handler_map[name](**args) if isinstance(args, dict) else handler_map[name]()
+        if isinstance(result, dict) and result.get("status") == "error":
+            return "error", result
         return "ok", result
     except Exception as exc:
-        return "error", {"error": str(exc)}
+        return "error", {"status": "error", "error": _sanitize_error(exc)}
 
 
 def _run_openrouter_investigation(
@@ -208,7 +228,8 @@ def _run_openrouter_investigation(
             timeout=settings.tool_timeout_seconds,
         )
         if not resp.ok:
-            raise RuntimeError(f"OpenRouter request failed: {resp.status_code} {resp.text}")
+            logger.warning("OpenRouter request failed: %s %s", resp.status_code, resp.text)
+            raise RuntimeError(f"OpenRouter request failed: {resp.status_code}")
 
         completion = resp.json()
         choice = completion.get("choices", [{}])[0]
@@ -328,7 +349,7 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
     for idx, provider in enumerate(providers[:max_turns], start=1):
         addr = provider.get("address", "")
         capacity = int(provider.get("capacity", 0))
-        property_data = get_property_data(addr, state=state)
+        property_data = get_property_data(addr, state=state, offline=True)
         sqft = float(property_data.get("building_sqft", 0) or 0)
         calc = calculate_max_capacity(sqft, state=state, usable_ratio=0.65)
         places = get_places_info(addr)

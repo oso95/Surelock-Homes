@@ -1,4 +1,8 @@
-﻿const runBtn = document.getElementById("runBtn");
+/* ==========================================================================
+   DOM References
+   ========================================================================== */
+
+const runBtn = document.getElementById("runBtn");
 const queryInput = document.getElementById("query");
 const offlineToggle = document.getElementById("offlineToggle");
 const modeHint = document.getElementById("modeHint");
@@ -9,26 +13,220 @@ const runMessage = document.getElementById("runMessage");
 const jsonPayload = document.getElementById("jsonPayload");
 const connectionStatus = document.getElementById("connectionStatus");
 
+const emptyState = document.getElementById("emptyState");
+const loadingState = document.getElementById("loadingState");
+const resultsContainer = document.getElementById("resultsContainer");
+
 const metricMode = document.getElementById("metricMode");
 const metricProviders = document.getElementById("metricProviders");
 const metricFlags = document.getElementById("metricFlags");
 const metricTurns = document.getElementById("metricTurns");
-const metricSummary = document.getElementById("metricSummary");
+const flagsAlert = document.getElementById("flagsAlert");
+const flagsAlertText = document.getElementById("flagsAlertText");
 const flagBadge = document.getElementById("flagBadge");
 const flagsList = document.getElementById("flagsList");
 const thinkingList = document.getElementById("thinkingList");
-const narrationList = document.getElementById("narrationList");
+const thinkingBadge = document.getElementById("thinkingBadge");
+const narrativeContent = document.getElementById("narrativeContent");
+const narrativeWordCount = document.getElementById("narrativeWordCount");
 const toolCallList = document.getElementById("toolCallList");
+const toolCountBadge = document.getElementById("toolCountBadge");
 const timelineList = document.getElementById("timelineList");
 
 let lastPayload = null;
 
-document.querySelectorAll(".chip-btn").forEach((button) => {
+/* ==========================================================================
+   View State Management
+   ========================================================================== */
+
+function showEmpty() {
+  emptyState.hidden = false;
+  loadingState.hidden = true;
+  resultsContainer.hidden = true;
+}
+
+function showLoading() {
+  emptyState.hidden = true;
+  loadingState.hidden = false;
+  resultsContainer.hidden = true;
+}
+
+function showResults() {
+  emptyState.hidden = true;
+  loadingState.hidden = true;
+  resultsContainer.hidden = false;
+}
+
+/* ==========================================================================
+   Utilities
+   ========================================================================== */
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatCode(value) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+/* ==========================================================================
+   Markdown Renderer (lightweight GFM-to-HTML, XSS-safe)
+   ========================================================================== */
+
+function renderMarkdown(md) {
+  if (!md || typeof md !== "string") return "";
+
+  const lines = md.split("\n");
+  const out = [];
+  let inCodeBlock = false;
+  let codeBlockContent = [];
+  let inList = false;
+  let listType = "";
+  let inTable = false;
+  let tableRows = [];
+
+  function flushList() {
+    if (inList) {
+      out.push(listType === "ol" ? "</ol>" : "</ul>");
+      inList = false;
+    }
+  }
+
+  function flushTable() {
+    if (!inTable || tableRows.length === 0) return;
+    let html = "<table>";
+    tableRows.forEach((row, i) => {
+      const cells = row.split("|").filter((c, idx, arr) => idx > 0 && idx < arr.length);
+      if (i === 1 && cells.every(c => /^[\s\-:]+$/.test(c))) return;
+      const tag = i === 0 ? "th" : "td";
+      html += "<tr>" + cells.map(c => `<${tag}>${inlineFormat(c.trim())}</${tag}>`).join("") + "</tr>";
+    });
+    html += "</table>";
+    out.push(html);
+    inTable = false;
+    tableRows = [];
+  }
+
+  function inlineFormat(text) {
+    let s = escapeHtml(text);
+    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/__(.+?)__/g, "<strong>$1</strong>");
+    s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
+    s = s.replace(/_(.+?)_/g, "<em>$1</em>");
+    s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, linkText, href) {
+      const safeHref = escapeHtml(href);
+      if (!/^https?:\/\//i.test(href)) return linkText;
+      return '<a href="' + safeHref + '" rel="noopener">' + linkText + "</a>";
+    });
+    return s;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (/^```/.test(line)) {
+      if (inCodeBlock) {
+        out.push("<pre><code>" + escapeHtml(codeBlockContent.join("\n")) + "</code></pre>");
+        codeBlockContent = [];
+        inCodeBlock = false;
+      } else {
+        flushList();
+        flushTable();
+        inCodeBlock = true;
+      }
+      continue;
+    }
+    if (inCodeBlock) {
+      codeBlockContent.push(line);
+      continue;
+    }
+
+    if (/^\|/.test(line) && line.includes("|")) {
+      flushList();
+      if (!inTable) inTable = true;
+      tableRows.push(line);
+      continue;
+    } else if (inTable) {
+      flushTable();
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushList();
+      out.push("<hr>");
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
+    if (headingMatch) {
+      flushList();
+      const level = headingMatch[1].length;
+      out.push(`<h${level}>${inlineFormat(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      flushList();
+      out.push(`<blockquote>${inlineFormat(line.replace(/^>\s?/, ""))}</blockquote>`);
+      continue;
+    }
+
+    const ulMatch = line.match(/^[-*+]\s+(.+)/);
+    if (ulMatch) {
+      if (!inList || listType !== "ul") {
+        flushList();
+        out.push("<ul>");
+        inList = true;
+        listType = "ul";
+      }
+      out.push(`<li>${inlineFormat(ulMatch[1])}</li>`);
+      continue;
+    }
+
+    const olMatch = line.match(/^\d+\.\s+(.+)/);
+    if (olMatch) {
+      if (!inList || listType !== "ol") {
+        flushList();
+        out.push("<ol>");
+        inList = true;
+        listType = "ol";
+      }
+      out.push(`<li>${inlineFormat(olMatch[1])}</li>`);
+      continue;
+    }
+
+    if (line.trim() === "") {
+      flushList();
+      continue;
+    }
+
+    flushList();
+    out.push(`<p>${inlineFormat(line)}</p>`);
+  }
+
+  if (inCodeBlock) {
+    out.push("<pre><code>" + escapeHtml(codeBlockContent.join("\n")) + "</code></pre>");
+  }
+  flushList();
+  flushTable();
+
+  return out.join("\n");
+}
+
+/* ==========================================================================
+   Preset Buttons & Controls
+   ========================================================================== */
+
+document.querySelectorAll(".preset-btn").forEach((button) => {
   button.addEventListener("click", () => {
     const preset = button.getAttribute("data-query");
-    if (preset) {
-      queryInput.value = preset;
-    }
+    if (preset) queryInput.value = preset;
   });
 });
 
@@ -38,111 +236,120 @@ turnsRange.addEventListener("input", () => {
 
 function setStatusText(message, isError = false) {
   runMessage.textContent = message;
-  runMessage.style.color = isError ? "var(--bad)" : "var(--muted)";
+  runMessage.style.color = isError ? "#ef4444" : "#94a3b8";
 }
 
-function formatCode(value) {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return value;
-  return JSON.stringify(value, null, 2);
-}
-
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function setPlaceholder(container, text, asText = false) {
-  if (asText) {
-    container.textContent = text;
-    return;
-  }
-
-  container.innerHTML = `<li class="placeholder">${escapeHtml(text)}</li>`;
-}
+/* ==========================================================================
+   Render Functions
+   ========================================================================== */
 
 function renderMetrics(payload) {
   const flags = Array.isArray(payload.flagged) ? payload.flagged.length : 0;
-  metricMode.textContent = payload.mode || "offline";
+  metricMode.textContent = payload.mode === "agent" ? "Agent (Live)" : (payload.mode || "Offline");
   metricProviders.textContent = String(payload.provider_count ?? 0);
   metricFlags.textContent = String(flags);
   metricTurns.textContent = String(payload.turns ?? 0);
 
-  metricSummary.textContent =
-    payload.assistant_text ||
-    (Array.isArray(payload.narration) ? payload.narration.join(" ") : "Investigation completed with no assistant summary.");
-
-  flagBadge.textContent = `${flags} flagged`;
-  flagBadge.className = "chip " + (flags > 0 ? "chip--warn" : "chip--neutral");
-
-  if (payload.mode === "agent") {
-    metricMode.textContent = "agent (live)";
+  const flagsKpi = metricFlags.closest(".kpi");
+  if (flagsKpi) {
+    flagsKpi.classList.toggle("kpi--alert", flags > 0);
   }
+
+  // Flags alert banner
+  if (flags > 0) {
+    flagsAlert.hidden = false;
+    flagsAlertText.textContent = `${flags} provider${flags > 1 ? "s" : ""} flagged with potential anomalies`;
+  } else {
+    flagsAlert.hidden = true;
+  }
+
+  flagBadge.textContent = flags > 0 ? `${flags} flagged` : "No flags";
+  flagBadge.className = "badge " + (flags > 0 ? "badge--red" : "badge--neutral");
 }
 
-function renderTextList(container, payload, fallback) {
-  if (!Array.isArray(payload) || payload.length === 0) {
-    setPlaceholder(container, fallback);
+function renderNarrative(payload) {
+  // Use narration (structured markdown) as the primary source.
+  // Only fall back to assistant_text if narration is empty or trivially short.
+  const narration = payload.narration || "";
+  const assistantText = payload.assistant_text || "";
+
+  let content = "";
+  if (typeof narration === "string" && narration.trim().length > 0) {
+    content = narration;
+  } else if (assistantText.trim().length > 0) {
+    content = assistantText;
+  }
+
+  if (!content.trim()) {
+    narrativeContent.innerHTML = '<p class="placeholder">No analysis available.</p>';
+    narrativeWordCount.textContent = "";
     return;
   }
 
-  container.innerHTML = "";
-  payload.forEach((item) => {
-    const li = document.createElement("li");
-    li.textContent = String(item || "");
-    container.appendChild(li);
+  narrativeContent.innerHTML = renderMarkdown(content);
+  const wordCount = content.split(/\s+/).filter(Boolean).length;
+  narrativeWordCount.textContent = `${wordCount} words`;
+}
+
+function renderThinking(payload) {
+  const thinking = Array.isArray(payload.thinking) ? payload.thinking : [];
+  thinkingBadge.textContent = `${thinking.length} step${thinking.length !== 1 ? "s" : ""}`;
+  thinkingBadge.className = "badge " + (thinking.length > 0 ? "badge--green" : "badge--neutral");
+
+  if (thinking.length === 0) {
+    thinkingList.innerHTML = '<p class="placeholder">No thinking trace available.</p>';
+    return;
+  }
+
+  thinkingList.innerHTML = "";
+  thinking.forEach((item) => {
+    const div = document.createElement("div");
+    div.className = "thinking-item";
+    div.textContent = String(item || "");
+    thinkingList.appendChild(div);
   });
 }
 
 function buildFlagCard(flag, index) {
   const card = document.createElement("article");
-  card.className = "result-card";
+  card.className = "flag-card";
 
   const provider = flag.provider || flag;
   const name = provider.name || provider.provider_name || provider.provider || `Flag ${index + 1}`;
   const addr = provider.address || provider.location || "Address not available";
   const maxLegal = flag.max_legal_capacity ?? flag.legal_max_capacity ?? "N/A";
   const licensed = flag.licensed_capacity ?? "N/A";
-
   const excess = flag.excess_capacity ??
     (Number.isFinite(Number(licensed)) && Number.isFinite(Number(maxLegal))
       ? Math.max(0, Number(licensed) - Number(maxLegal))
       : "N/A");
-
-  const details = {
-    state: provider.state || "unknown",
-    source: provider.source || "local",
-    licensed_capacity: licensed,
-    max_legal_capacity: maxLegal,
-    excess_capacity: excess,
-  };
+  const state = provider.state || "unknown";
+  const source = provider.source || "local";
 
   card.innerHTML = `
-    <div class="flag-card-header">
+    <div class="flag-card__header">
       <h4>${escapeHtml(index + 1)}. ${escapeHtml(name)}</h4>
-      <span class="chip chip--warn">Potential mismatch</span>
+      <span class="flag-card__flagged">Flagged</span>
     </div>
-    <p class="result-meta">${escapeHtml(addr)} , ${escapeHtml(details.state)}</p>
-    <ul class="mini-meta">
-      <li>Licensed capacity: ${escapeHtml(details.licensed_capacity)}</li>
-      <li>Max legal capacity: ${escapeHtml(details.max_legal_capacity)}</li>
-      <li>Excess: ${escapeHtml(details.excess_capacity)}</li>
-      <li>Source: ${escapeHtml(details.source)}</li>
-    </ul>
+    <dl class="flag-card__meta">
+      <dt>Address</dt><dd>${escapeHtml(addr)}</dd>
+      <dt>State</dt><dd>${escapeHtml(state)}</dd>
+      <dt>Licensed</dt><dd>${escapeHtml(licensed)}</dd>
+      <dt>Max legal</dt><dd>${escapeHtml(maxLegal)}</dd>
+      <dt>Excess</dt><dd>${escapeHtml(excess)}</dd>
+      <dt>Source</dt><dd>${escapeHtml(source)}</dd>
+    </dl>
     <details>
-      <summary>Show full flag record</summary>
+      <summary>Full record</summary>
       <pre class="code-block">${escapeHtml(formatCode(flag))}</pre>
     </details>
   `;
-
   return card;
 }
 
 function renderFlags(flags) {
   if (!Array.isArray(flags) || flags.length === 0) {
-    flagsList.innerHTML = `<p class="placeholder">No flags were raised for this run.</p>`;
+    flagsList.innerHTML = '<p class="placeholder">No flags were raised for this run.</p>';
     return;
   }
 
@@ -153,28 +360,35 @@ function renderFlags(flags) {
 }
 
 function renderToolCalls(toolCalls) {
-  if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-    toolCallList.innerHTML = `<p class="placeholder">No tool calls recorded for this run.</p>`;
+  const count = Array.isArray(toolCalls) ? toolCalls.length : 0;
+  toolCountBadge.textContent = String(count);
+  toolCountBadge.className = "badge " + (count > 0 ? "badge--purple" : "badge--neutral");
+
+  if (count === 0) {
+    toolCallList.innerHTML = '<p class="placeholder">No tool calls recorded for this run.</p>';
     return;
   }
+
   toolCallList.innerHTML = "";
-  toolCalls.forEach((entry) => {
+  toolCalls.forEach((entry, index) => {
     const card = document.createElement("article");
-    card.className = "result-card";
+    card.className = "tool-card";
     const status = entry.status || "ok";
-    const statusClass = status === "ok" ? "chip--ok" : "chip--warn";
-    const args = formatCode(entry.arguments || {});
+    const badgeClass = status === "ok" ? "badge--green" : "badge--amber";
+    const args = formatCode(entry.arguments || entry.input || {});
     const result = formatCode(entry.result);
+    const openAttr = index < 3 ? " open" : "";
+
     card.innerHTML = `
-      <div class="tool-header">
+      <div class="tool-card__header">
         <h4>${escapeHtml(entry.tool || "tool")}</h4>
-        <span class="chip ${statusClass}">${escapeHtml(status)}</span>
+        <span class="badge ${badgeClass}">${escapeHtml(status)}</span>
       </div>
-      <details>
+      <details${openAttr}>
         <summary>Input</summary>
         <pre class="code-block">${escapeHtml(args)}</pre>
       </details>
-      <details>
+      <details${openAttr}>
         <summary>Result</summary>
         <pre class="code-block">${escapeHtml(result)}</pre>
       </details>
@@ -200,7 +414,7 @@ function buildTimelineEvents(payload) {
       if (assistantText) {
         events.push({
           kind: "assistant",
-          label: `Turn ${turnNo} assistant response`,
+          label: `Turn ${turnNo} - Assistant`,
           detail: assistantText,
           tone: "ok",
         });
@@ -208,23 +422,37 @@ function buildTimelineEvents(payload) {
       if (Array.isArray(turn.tool_results)) {
         turn.tool_results.forEach((toolItem) => {
           const toolLabel = toolItem.tool || "tool";
-          const args = toolItem.result ? "(result returned)" : "(no result)";
           const hasError = toolItem.status && toolItem.status !== "ok";
           events.push({
             kind: "tool",
-            label: `Turn ${turnNo}: ${toolLabel}`,
-            detail: `${args}`,
+            label: `Turn ${turnNo} - ${toolLabel}`,
+            detail: toolItem.result ? "(result returned)" : "(no result)",
             tone: hasError ? "warn" : "ok",
           });
         });
       }
-      if (turn.provider || turn.provider_name || turn.tool) {
-        const providerName = turn.provider?.name || turn.provider_name || turn.provider || "Provider inspected";
+      // Offline mode: turn has .tools array and .provider
+      if (Array.isArray(turn.tools)) {
+        turn.tools.forEach((toolItem) => {
+          const toolLabel = toolItem.tool || "tool";
+          events.push({
+            kind: "tool",
+            label: `Turn ${turnNo} - ${toolLabel}`,
+            detail: toolItem.result ? "(result returned)" : "(no result)",
+            tone: "ok",
+          });
+        });
+      }
+      if (turn.provider || turn.provider_name) {
+        const providerName = typeof turn.provider === "string"
+          ? turn.provider
+          : (turn.provider?.name || turn.provider_name || "Provider");
+        const flagged = turn.flagged ? " [FLAGGED]" : "";
         events.push({
           kind: "provider",
-          label: `Turn ${turnNo} target`,
-          detail: providerName,
-          tone: "neutral",
+          label: `Turn ${turnNo} - Target`,
+          detail: providerName + flagged,
+          tone: turn.flagged ? "warn" : "neutral",
         });
       }
     });
@@ -248,72 +476,63 @@ function buildTimelineEvents(payload) {
 function renderTimeline(payload) {
   const events = buildTimelineEvents(payload);
   if (events.length === 0) {
-    timelineList.innerHTML = `<p class="timeline-empty">No timeline events available.</p>`;
+    timelineList.innerHTML = '<p class="placeholder">No timeline events available.</p>';
     return;
   }
 
   timelineList.innerHTML = "";
-  events.forEach((event, index) => {
+  events.forEach((event) => {
     const row = document.createElement("article");
     row.className = "timeline-item";
-
-    const toneClass = event.tone === "warn" ? "timeline-item--warn" : event.tone === "ok" ? "timeline-item--ok" : "";
-    const title = event.label || "System event";
+    const dotClass = event.tone === "warn" ? "timeline-dot--warn" : event.tone === "ok" ? "timeline-dot--ok" : "";
+    const detailHtml = renderMarkdown(event.detail || "No details.");
 
     row.innerHTML = `
-      <div class="timeline-dot ${toneClass}"></div>
+      <div class="timeline-dot ${dotClass}"></div>
       <div class="timeline-card">
-        <p class="timeline-step">${escapeHtml(title)}</p>
-        <p class="timeline-meta">${escapeHtml(event.detail || "No details.")}</p>
+        <p class="timeline-step">${escapeHtml(event.label || "System event")}</p>
+        <div class="timeline-meta"><div class="prose">${detailHtml}</div></div>
       </div>
     `;
     timelineList.appendChild(row);
-
-    if (index === events.length - 1) {
-      row.classList.add("timeline-item--last");
-    }
   });
 }
 
-function renderThinkingAndNarration(payload) {
-  const thinking = Array.isArray(payload.thinking) ? payload.thinking : [];
-  const narration = [];
-
-  if (typeof payload.narration === "string") {
-    narration.push(payload.narration);
-  } else if (Array.isArray(payload.narration)) {
-    narration.push(...payload.narration);
-  } else if (typeof payload.assistant_text === "string") {
-    narration.push(payload.assistant_text);
-  }
-
-  renderTextList(thinkingList, thinking, "No thinking trace available.");
-  renderTextList(narrationList, narration, "No narration available.");
-}
+/* ==========================================================================
+   Main Render
+   ========================================================================== */
 
 function renderPayload(payload) {
   jsonPayload.textContent = formatCode(payload);
   renderMetrics(payload);
+  renderNarrative(payload);
+  renderThinking(payload);
   renderFlags(payload.flagged);
-  renderThinkingAndNarration(payload);
   renderToolCalls(payload.tool_calls);
   renderTimeline(payload);
   copyJsonBtn.disabled = false;
+  showResults();
 }
+
+/* ==========================================================================
+   Connection Check
+   ========================================================================== */
 
 async function checkConnection() {
   try {
     const res = await fetch("/api/health");
-    if (!res.ok) {
-      throw new Error("health check failed");
-    }
-    connectionStatus.textContent = "Backend: connected";
-    connectionStatus.className = "chip chip--ok";
+    if (!res.ok) throw new Error("health check failed");
+    connectionStatus.textContent = "Connected";
+    connectionStatus.className = "status-badge status-badge--ok";
   } catch (error) {
-    connectionStatus.textContent = "Backend: unavailable";
-    connectionStatus.className = "chip chip--warn";
+    connectionStatus.textContent = "Unavailable";
+    connectionStatus.className = "status-badge status-badge--error";
   }
 }
+
+/* ==========================================================================
+   Investigation Runner
+   ========================================================================== */
 
 runBtn.addEventListener("click", async () => {
   const query = queryInput.value.trim();
@@ -323,9 +542,10 @@ runBtn.addEventListener("click", async () => {
   }
 
   runBtn.disabled = true;
-  runBtn.textContent = "Running…";
-  runMessage.textContent = "Starting investigation...";
+  runBtn.textContent = "Running\u2026";
   copyJsonBtn.disabled = true;
+  setStatusText("Starting investigation...");
+  showLoading();
 
   try {
     const response = await fetch("/api/investigate", {
@@ -341,9 +561,9 @@ runBtn.addEventListener("click", async () => {
     const payload = await response.json();
     lastPayload = payload;
     renderPayload(payload);
-    runMessage.textContent = `Completed (${payload.status || "ok"})`;
+    setStatusText(`Completed (${payload.status || "ok"})`);
   } catch (error) {
-    runMessage.textContent = "Investigation failed. Check backend logs.";
+    showResults();
     setStatusText("Investigation failed. Check network/backend.", true);
     jsonPayload.textContent = formatCode({
       error: String(error),
@@ -356,13 +576,21 @@ runBtn.addEventListener("click", async () => {
   }
 });
 
+/* ==========================================================================
+   Offline Mode Preference (localStorage)
+   ========================================================================== */
+
 const OFFLINE_PREFERENCE_KEY = "surelock_offline_mode";
 
 function updateModeHint() {
   if (offlineToggle.checked) {
-    modeHint.textContent = "Offline mode enabled. Uncheck to run online.";
+    modeHint.textContent = "Online mode";
   } else {
-    modeHint.textContent = "Online mode enabled. Live provider is controlled by LLM_PROVIDER.";
+    modeHint.textContent = "Offline mode";
+  }
+  const toggleLabel = offlineToggle.closest("[role='switch']");
+  if (toggleLabel) {
+    toggleLabel.setAttribute("aria-checked", String(offlineToggle.checked));
   }
 }
 
@@ -377,6 +605,10 @@ offlineToggle.addEventListener("change", () => {
   updateModeHint();
 });
 
+/* ==========================================================================
+   Copy JSON
+   ========================================================================== */
+
 copyJsonBtn.addEventListener("click", async () => {
   if (!lastPayload) return;
   const text = formatCode(lastPayload);
@@ -385,6 +617,11 @@ copyJsonBtn.addEventListener("click", async () => {
   setTimeout(() => setStatusText("Ready."), 1200);
 });
 
+/* ==========================================================================
+   Init
+   ========================================================================== */
+
 restoreModePreference();
 turnsValue.textContent = turnsRange.value;
 checkConnection();
+showEmpty();
