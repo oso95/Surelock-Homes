@@ -64,17 +64,25 @@ def _build_no_place_result(address: str, note: str) -> Dict[str, Any]:
     geocoded = geocode_address(address)
     house_number = _house_number(address)
     formatted_address = geocoded.get("formatted_address")
+    geo_status = str(geocoded.get("status", "")).lower()
     has_house_match = bool(formatted_address and _has_matching_house(str(formatted_address), house_number))
 
-    if has_house_match or not house_number:
+    if geo_status == "error":
         notes = geocoded.get("error") or note
-        latitude = geocoded.get("lat")
-        longitude = geocoded.get("lng")
-    else:
-        notes = "No Google Places record found for this address and geocode result did not match the requested street number."
         formatted_address = None
         latitude = None
         longitude = None
+    else:
+        if house_number and not has_house_match:
+            notes = (
+                "Google Places returned no match for this facility, and geocoding resolved a nearby/related address "
+                "that does not match the requested street number."
+            )
+        else:
+            notes = geocoded.get("error") or note
+
+        latitude = geocoded.get("lat")
+        longitude = geocoded.get("lng")
 
     return {
         "status": "no_place",

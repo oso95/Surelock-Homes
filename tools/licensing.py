@@ -35,6 +35,7 @@ def _read_csv(path: Path):
 def _find_live_il_matches(name: str, address: str | None) -> list[Dict[str, Any]]:
     needle = _normalize(name)
     address_norm = _normalize(address)
+    address_tokens = re.split(r"\W+", address_norm) if address_norm else []
     matches: list[Dict[str, Any]] = []
     try:
         records = _load_il_live_records()
@@ -46,8 +47,12 @@ def _find_live_il_matches(name: str, address: str | None) -> list[Dict[str, Any]
         provider = _normalize(row.get("name"))
         if needle not in provider:
             continue
-        if address_norm and address_norm not in _normalize(row.get("address")):
+        row_address = _normalize(row.get("address"))
+        if address_norm and row_address and address_norm not in row_address and row_address not in address_norm:
             continue
+        if address_tokens and len(address_tokens) >= 2:
+            if not all(token in row_address for token in address_tokens[:2]):
+                continue
         matches.append(
             {
                 "status": "found",
@@ -79,8 +84,10 @@ def check_licensing_status(
     address_norm = _normalize(address)
 
     for row in _read_csv(path):
-        if target in _normalize(row.get("provider_name")).lower():
-            if address and address_norm and address_norm not in _normalize(row.get("address")):
+        provider_row = _normalize(row.get("provider_name"))
+        row_address = _normalize(row.get("address"))
+        if target in provider_row:
+            if address and address_norm and row_address and row_address not in address_norm and address_norm not in row_address:
                 continue
             return {
                 "status": "found",

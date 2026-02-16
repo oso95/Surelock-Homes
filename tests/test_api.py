@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 from backend_api import app
 
@@ -27,3 +28,12 @@ def test_frontend_root_contains_inputs():
     assert "Surelock Homes" in html
     assert "runBtn" in html
 
+
+def test_stream_route_returns_error_event_on_generator_failure():
+    with patch("backend_api.run_investigation_stream", side_effect=RuntimeError("stream exploded")):
+        client = TestClient(app)
+        response = client.post("/api/investigate/stream", json={"query": "Investigate Illinois providers in ZIP 60612"})
+        assert response.status_code == 200
+        body = response.text
+        assert '"event":"error"' in body
+        assert "stream exploded" in body

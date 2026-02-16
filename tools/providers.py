@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 MN_SHAPE_URL = "https://resources.gisdata.mn.gov/pub/gdrs/data/pub/us_mn_state_mngeo/econ_child_care/shp_econ_child_care.zip"
 IL_DCFS_URL = "https://sunshine.dcfs.illinois.gov/Content/Licensing/Daycare/ProviderLookup.aspx"
+REQUEST_TIMEOUT_SECONDS = 8
 
 MN_LIVE_CACHE = DATA_DIR / "mn_providers_live.csv"
 IL_LIVE_CACHE = DATA_DIR / "il_providers_live.csv"
@@ -145,7 +146,7 @@ def _load_mn_live_records() -> List[Dict[str, Any]]:
     if _is_fresh_cache(MN_LIVE_CACHE):
         return _read_csv(MN_LIVE_CACHE)
 
-    response = requests.get(MN_SHAPE_URL, timeout=30)
+    response = requests.get(MN_SHAPE_URL, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     shp_data = io.BytesIO(response.content)
     z = zipfile.ZipFile(shp_data)
@@ -196,7 +197,7 @@ def _load_il_live_records() -> List[Dict[str, Any]]:
         return _read_csv(IL_LIVE_CACHE)
 
     session = requests.Session()
-    page = session.get(IL_DCFS_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    page = session.get(IL_DCFS_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT_SECONDS)
     page.raise_for_status()
     soup = BeautifulSoup(page.text, "html.parser")
     form_data = {}
@@ -209,7 +210,7 @@ def _load_il_live_records() -> List[Dict[str, Any]]:
     for key in [k for k in form_data if k.endswith("ASPxSearch") and k.startswith("ctl00$ContentPlaceHolderContent$")]:
         form_data[key] = "Search"
 
-    response = session.post(IL_DCFS_URL, data=form_data, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    response = session.post(IL_DCFS_URL, data=form_data, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     parsed = _parse_dcfs_rows_from_payload(response.text)
     rows = [

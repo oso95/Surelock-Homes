@@ -115,8 +115,16 @@ def _sse_generator(
     max_turns: int,
     offline: bool = False,
 ) -> Generator[str, None, None]:
-    for event in run_investigation_stream(query, max_turns=max_turns, offline=offline):
-        yield f"data: {json.dumps(event, default=str)}\n\n"
+    try:
+        for event in run_investigation_stream(query, max_turns=max_turns, offline=offline):
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+    except Exception as exc:
+        logger.exception("Streaming generator error for query %s", query)
+        error_msg = str(exc).strip() or "Unexpected stream failure."
+        if len(error_msg) > 240:
+            error_msg = error_msg[:240] + "..."
+        yield f"data: {json.dumps({'event': 'error', 'error': error_msg, 'query': query}, default=str)}\n\n"
+        yield f"data: {json.dumps({'event': 'complete', 'payload': {'query': query, 'mode': 'agent', 'status': 'error', 'error': error_msg}}, default=str)}\n\n"
 
 
 @app.post("/api/investigate/stream")

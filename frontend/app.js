@@ -602,9 +602,19 @@ runBtn.addEventListener("click", async () => {
     });
 
     if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${response.status}`);
+      const bodyText = await response.text();
+      let errMsg = `HTTP ${response.status}`;
+      try {
+        const body = JSON.parse(bodyText);
+        errMsg = body.detail || body.error || errMsg;
+      } catch {
+        if (bodyText) errMsg = bodyText;
+      }
+      throw new Error(errMsg);
     }
+
+    let sawComplete = false;
+    let streamError = null;
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -690,25 +700,40 @@ runBtn.addEventListener("click", async () => {
           }
 
           case "complete":
+            sawComplete = true;
             setProgress(100);
             loadingStatus.textContent = "Investigation complete";
             addActivity("\u{1F3C1}", `Done - ${event.payload.flagged?.length || 0} flags found`, "");
+            if (event.payload.status === "error") {
+              streamError = event.payload.error || "Investigation completed with an error.";
+              addActivity("\u26A0\uFE0F", `Error: ${streamError}`, "activity-log__flag");
+              setStatusText(`Investigation failed: ${streamError}`, true);
+            } else {
+              setStatusText(`Completed (${event.payload.status || "ok"})`);
+            }
             lastPayload = event.payload;
             addToHistory(query, event.payload);
             // Brief delay so user can see the completion log
             await new Promise(r => setTimeout(r, 600));
             renderPayload(event.payload);
-            setStatusText(`Completed (${event.payload.status || "ok"})`);
             break;
 
           case "error":
-            throw new Error(event.error || "Investigation stream error");
+            streamError = event.error || "Investigation stream error";
+            addActivity("\u26A0\uFE0F", `Error: ${streamError}`, "activity-log__flag");
+            throw new Error(streamError);
         }
       }
     }
+
+    if (!sawComplete) {
+      throw new Error("Investigation stream ended before completion.");
+    }
   } catch (error) {
     showResults();
-    setStatusText("Investigation failed. Check network/backend.", true);
+    const message = error instanceof Error ? error.message : String(error);
+    const detail = message || "Check network/backend.";
+    setStatusText(`Investigation failed. ${detail}`, true);
     jsonPayload.textContent = formatCode({
       error: String(error),
       status: "frontend_request_failed",
