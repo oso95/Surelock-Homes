@@ -56,20 +56,38 @@ def _house_number(address: str) -> str:
     return match.group(1) if match else ""
 
 
+def _has_matching_house(formatted: str, expected_house: str) -> bool:
+    return bool(expected_house and re.search(rf"\b{re.escape(expected_house)}\b", formatted))
+
+
 def _build_no_place_result(address: str, note: str) -> Dict[str, Any]:
     geocoded = geocode_address(address)
+    house_number = _house_number(address)
+    formatted_address = geocoded.get("formatted_address")
+    has_house_match = bool(formatted_address and _has_matching_house(str(formatted_address), house_number))
+
+    if has_house_match or not house_number:
+        notes = geocoded.get("error") or note
+        latitude = geocoded.get("lat")
+        longitude = geocoded.get("lng")
+    else:
+        notes = "No Google Places record found for this address and geocode result did not match the requested street number."
+        formatted_address = None
+        latitude = None
+        longitude = None
+
     return {
         "status": "no_place",
         "address": address,
-        "formatted_address": geocoded.get("formatted_address"),
+        "formatted_address": formatted_address,
         "business_type": "address_only",
         "operating_status": "not_listed_as_business",
         "rating": None,
         "review_count": 0,
         "recent_reviews": [],
-        "latitude": geocoded.get("lat"),
-        "longitude": geocoded.get("lng"),
-        "notes": geocoded.get("error") or note,
+        "latitude": latitude,
+        "longitude": longitude,
+        "notes": geocoded.get("error") or notes,
         "geocode_status": geocoded.get("status"),
     }
 

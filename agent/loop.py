@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Generator, List, Tuple
 
 import json
 from urllib.parse import urljoin
@@ -113,6 +113,14 @@ def _summarize_for_model(value: Any, max_depth: int = 2) -> Any:
     if isinstance(value, str):
         return _compact_scalar(value, 320)
     return value
+
+
+def _infer_state_and_zip(query: str) -> Tuple[str, str | None]:
+    lower = query.lower()
+    state = "IL" if "il" in lower or "illinois" in lower else "MN"
+    state = "MN" if "mn" in lower or "minnesota" in lower else state
+    zip_match = re.search(r"\b\d{5}\b", query)
+    return state, zip_match.group(0) if zip_match else None
 
 
 def _compact_tool_result(value: Any) -> Any:
@@ -306,16 +314,209 @@ def _run_openrouter_investigation(
     }
 
 
-def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
-    lower = query.lower()
-    state = "IL" if "il" in lower or "illinois" in lower else "MN"
-    state = "MN" if "mn" in lower or "minnesota" in lower else state
-    zip_code = None
-    import re
+def _run_openrouter_investigation_stream(
+    query: str,
+    max_turns: int,
+    model: str,
+    settings: Any,
+) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
+    if requests is None:
+        raise RuntimeError("requests is required for OpenRouter calls.")
 
-    zip_match = re.search(r"\b\d{5}\b", query)
-    if zip_match:
-        zip_code = zip_match.group(0)
+    state, zip_code = _infer_state_and_zip(query)
+    yield {
+        "event": "start",
+        "query": query,
+        "state": state,
+        "zip": zip_code,
+        "provider": "openrouter",
+        "max_turns": max_turns,
+    }
+
+    url = urljoin(settings.openrouter_base_url.rstrip("/") + "/", "chat/completions")
+    tool_defs = get_tool_definitions()
+    openrouter_tools = _to_openrouter_tools(tool_defs)
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": load_system_prompt()},
+        {"role": "user", "content": query},
+    ]
+    tool_calls: List[Dict[str, Any]] = []
+    raw_turns: List[Dict[str, Any]] = []
+    thinking_blocks: List[str] = []
+    narration = InvestigationNarration(query=query)
+    assistant_text: List[str] = []
+
+    try:
+        for turn in range(1, max_turns + 1):
+            _enforce_context_budget(messages)
+            yield {"event": "turn_start", "turn": turn, "max_turns": max_turns}
+
+            request_payload = {
+                "model": model,
+                "messages": messages,
+                "tools": openrouter_tools,
+                "tool_choice": "auto",
+                "max_tokens": settings.max_tokens,
+            }
+            resp = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": settings.openrouter_site_url,
+                    "X-Title": settings.openrouter_app_name,
+                },
+                json=request_payload,
+                timeout=settings.tool_timeout_seconds,
+            )
+            if not resp.ok:
+                logger.warning("OpenRouter request failed: %s %s", resp.status_code, resp.text)
+                raise RuntimeError(f"OpenRouter request failed: {resp.status_code}")
+
+            completion = resp.json()
+            choice = completion.get("choices", [{}])[0]
+            message = choice.get("message", {})
+            finish_reason = choice.get("finish_reason")
+            assistant_text_block = message.get("content", "")
+            tool_calls_block = message.get("tool_calls", [])
+
+            turn_summary = {"turn": turn, "assistant": "", "tool_results": []}
+            if assistant_text_block:
+                assistant_text_block = str(assistant_text_block).strip()
+                turn_summary["assistant"] = assistant_text_block
+                narration.add_narration(assistant_text_block)
+                narration.add_assistant_text(assistant_text_block)
+                assistant_text.append(assistant_text_block)
+                yield {
+                    "event": "assistant_text",
+                    "turn": turn,
+                    "text": assistant_text_block,
+                }
+
+            assistant_history_entry = {"role": "assistant", "content": assistant_text_block or ""}
+            if tool_calls_block:
+                assistant_history_entry["tool_calls"] = tool_calls_block
+            messages.append(assistant_history_entry)
+
+            if not tool_calls_block:
+                raw_turns.append(turn_summary)
+                break
+
+            for tool_call in tool_calls_block:
+                tool_name = (tool_call.get("function") or {}).get("name")
+                raw_arguments = (tool_call.get("function") or {}).get("arguments", "{}")
+                if isinstance(raw_arguments, str):
+                    try:
+                        arguments = json.loads(raw_arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+                elif isinstance(raw_arguments, dict):
+                    arguments = raw_arguments
+                else:
+                    arguments = {}
+                if not tool_name:
+                    continue
+
+                yield {
+                    "event": "tool_call",
+                    "turn": turn,
+                    "tool": tool_name,
+                    "arguments": arguments,
+                }
+
+                tool_status, result = _call_tool(tool_name, arguments)
+                if tool_status == "error":
+                    yield {
+                        "event": "tool_error",
+                        "turn": turn,
+                        "tool": tool_name,
+                        "error": result.get("error") or "Unknown error",
+                    }
+                else:
+                    yield {
+                        "event": "tool_result",
+                        "turn": turn,
+                        "tool": tool_name,
+                        "status": tool_status,
+                    }
+
+                tool_calls.append({"tool": tool_name, "arguments": arguments, "status": tool_status, "result": result})
+                narration.add_tool_call(tool_name, arguments, result)
+                thinking_blocks.append(f"tool:{tool_name}")
+                turn_summary["tool_results"].append({"tool": tool_name, "result": result, "status": tool_status})
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.get("id"),
+                        "name": tool_name,
+                        "content": json.dumps(_compact_tool_result(result)),
+                    }
+                )
+                _enforce_context_budget(messages)
+
+                yield {
+                    "event": "tool_payload",
+                    "turn": turn,
+                    "tool": tool_name,
+                    "status": tool_status,
+                    "result": {
+                        "status": result.get("status"),
+                        "error": result.get("error"),
+                    },
+                }
+
+            raw_turns.append(turn_summary)
+            yield {"event": "turn_done", "turn": turn, "tools": [item["tool"] for item in turn_summary["tool_results"]]}
+
+            if finish_reason in {"stop", "tool_calls"} and not tool_calls_block:
+                break
+
+            if finish_reason == "stop" and not any(tc.get("function") for tc in tool_calls_block):
+                break
+
+        result_payload = {
+            "query": query,
+            "mode": "agent",
+            "status": "complete",
+            "turns": len(raw_turns),
+            "provider_count": 0,
+            "flagged": [],
+            "narration": narration.to_markdown(),
+            "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
+            "tool_calls": tool_calls,
+            "thinking": thinking_blocks,
+            "raw_turns": raw_turns,
+        }
+        yield {"event": "complete", "payload": result_payload}
+        return result_payload
+
+    except Exception as exc:
+        logger.warning("Streaming OpenRouter investigation failed for query %s: %s", query, exc, exc_info=True)
+        yield {
+            "event": "error",
+            "error": _sanitize_error(exc),
+            "query": query,
+        }
+        result_payload = {
+            "query": query,
+            "mode": "agent",
+            "status": "error",
+            "turns": len(raw_turns),
+            "provider_count": 0,
+            "flagged": [],
+            "narration": narration.to_markdown(),
+            "assistant_text": "\n".join(assistant_text) or "Investigation failed.",
+            "tool_calls": tool_calls,
+            "thinking": thinking_blocks,
+            "raw_turns": raw_turns,
+            "error": _sanitize_error(exc),
+        }
+        yield {"event": "complete", "payload": result_payload}
+        return result_payload
+
+
+def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
+    state, zip_code = _infer_state_and_zip(query)
 
     narration = InvestigationNarration(query=query)
     providers = search_childcare_providers(state=state, zip=zip_code)
@@ -419,15 +620,7 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
 
 def _offline_investigation_stream(query: str, max_turns: int = 8):
     """Generator yielding SSE-friendly dicts as the investigation progresses."""
-    import re as _re
-
-    lower = query.lower()
-    state = "IL" if "il" in lower or "illinois" in lower else "MN"
-    state = "MN" if "mn" in lower or "minnesota" in lower else state
-    zip_code = None
-    zip_match = _re.search(r"\b\d{5}\b", query)
-    if zip_match:
-        zip_code = zip_match.group(0)
+    state, zip_code = _infer_state_and_zip(query)
 
     yield {"event": "start", "query": query, "state": state, "zip": zip_code}
 
@@ -696,6 +889,45 @@ def run_investigation(
     if save_output:
         _persist_investigation(run_id, result, output_dir=output_dir)
     return result
+
+
+def run_investigation_stream(
+    query: str,
+    max_turns: int = 8,
+    offline: bool = False,
+    model: str | None = None,
+) -> Generator[Dict[str, Any], None, None]:
+    settings = load_settings()
+
+    if offline:
+        yield from _offline_investigation_stream(query, max_turns=max_turns)
+        return
+
+    if settings.llm_provider == "openrouter":
+        if not settings.openrouter_api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter.")
+        yield from _run_openrouter_investigation_stream(
+            query,
+            max_turns=max_turns,
+            model=model or settings.model,
+            settings=settings,
+        )
+        return
+
+    if settings.llm_provider == "anthropic":
+        if not settings.anthropic_api_key or anthropic is None:
+            raise RuntimeError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic.")
+        # No fine-grained streaming with Anthropic in this path; provide a single completion event.
+        yield {"event": "start", "query": query, "provider": "anthropic", "max_turns": max_turns}
+        try:
+            result = run_investigation(query, max_turns=max_turns, offline=False, model=model, save_output=False)
+            yield {"event": "complete", "payload": result}
+        except Exception as exc:
+            yield {"event": "error", "error": _sanitize_error(exc), "query": query}
+            result = {"query": query, "status": "error", "error": _sanitize_error(exc), "mode": "agent"}
+            yield {"event": "complete", "payload": result}
+        return
+    raise RuntimeError(f"Unknown LLM_PROVIDER '{settings.llm_provider}'. Set LLM_PROVIDER=anthropic or openrouter.")
 
 
 def parse_args() -> argparse.Namespace:

@@ -581,6 +581,7 @@ runBtn.addEventListener("click", async () => {
   }
 
   const isOffline = offlineToggle.checked;
+  const maxTurns = Number(turnsRange.value);
 
   runBtn.disabled = true;
   runBtn.textContent = "Running\u2026";
@@ -589,140 +590,133 @@ runBtn.addEventListener("click", async () => {
   resetStream();
   showLoading();
 
-  // Use streaming endpoint for offline mode, regular for online
-  if (isOffline) {
-    try {
-      const response = await fetch("/api/investigate/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query,
-          offline: true,
-          max_turns: Number(turnsRange.value),
-        }),
-      });
+  try {
+    const response = await fetch("/api/investigate/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query,
+        offline: isOffline,
+        max_turns: maxTurns,
+      }),
+    });
 
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.detail || `HTTP ${response.status}`);
-      }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${response.status}`);
+    }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
 
-        for (const part of parts) {
-          const line = part.replace(/^data: /, "").trim();
-          if (!line) continue;
+      for (const part of parts) {
+        const line = part.replace(/^data: /, "").trim();
+        if (!line) continue;
 
-          let event;
-          try { event = JSON.parse(line); } catch { continue; }
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
 
-          switch (event.event) {
-            case "start":
-              loadingStatus.textContent = `Investigating ${event.state} ${event.zip || ""}`;
-              addActivity("\u{1F50D}", `Query: ${event.query}`, "");
-              addActivity("\u{1F4CD}", `Target: ${event.state} ${event.zip || "all areas"}`, "activity-log__text--muted");
-              break;
-
-            case "providers_loaded":
-              addActivity("\u{1F4CB}", `${event.count} providers found`, "");
-              setProgress(5);
-              break;
-
-            case "provider_start":
-              loadingStatus.textContent = `Checking ${event.name} (${event.turn}/${event.total})`;
-              addActivity("\u{1F3E2}", `[${event.turn}/${event.total}] ${event.name} - ${event.address}`, "");
-              break;
-
-            case "tool_result":
-              addActivity("\u{2699}\u{FE0F}", `  ${event.tool}${event.sqft !== undefined ? ` (${event.sqft} sqft)` : ""}${event.max_legal !== undefined ? ` (max: ${event.max_legal})` : ""}`, "activity-log__text--muted");
-              break;
-
-            case "tool_error":
-              addActivity("\u{26A0}\u{FE0F}", `  ${event.tool} failed: ${event.error || "timeout"}`, "activity-log__flag");
-              break;
-
-            case "provider_done": {
-              const pct = 5 + (event.turn / event.total) * 90;
-              setProgress(pct);
-              if (event.flagged) {
-                addActivity("\u{1F6A9}", `  FLAGGED: licensed ${event.licensed} > max legal ${event.max_legal}`, "activity-log__flag");
-              } else {
-                addActivity("\u2705", `  OK`, "activity-log__text--muted");
-              }
-              break;
+        switch (event.event) {
+          case "start":
+            loadingStatus.textContent = `Investigating ${event.state || "targeted"} ${event.zip || ""}`;
+            addActivity("\u{1F50D}", `Query: ${event.query}`, "");
+            addActivity("\u{1F4CD}", `Target: ${event.state || "all"} ${event.zip || "areas"} (${event.provider || "engine"})`, "activity-log__text--muted");
+            if (event.provider === "openrouter") {
+              setProgress(2);
             }
+            break;
 
-            case "complete":
-              setProgress(100);
-              loadingStatus.textContent = "Investigation complete";
-              addActivity("\u{1F3C1}", `Done - ${event.payload.flagged?.length || 0} flags found`, "");
-              lastPayload = event.payload;
-              addToHistory(query, event.payload);
-              // Brief delay so user can see the completion log
-              await new Promise(r => setTimeout(r, 600));
-              renderPayload(event.payload);
-              setStatusText(`Completed (${event.payload.status || "ok"})`);
-              break;
+          case "turn_start":
+            addActivity("\u{1F9E0}", `Model turn ${event.turn}/${event.max_turns}`, "");
+            setProgress(2 + ((event.turn - 1) / event.max_turns) * 94);
+            break;
+
+          case "assistant_text":
+            addActivity("\u{1F4DD}", `Thinking: ${event.text.slice(0, 140)}${event.text.length > 140 ? "..." : ""}`, "activity-log__text--muted");
+            break;
+
+          case "providers_loaded":
+            addActivity("\u{1F4CB}", `${event.count} providers found`, "");
+            setProgress(5);
+            break;
+
+          case "provider_start":
+            loadingStatus.textContent = `Checking ${event.name} (${event.turn}/${event.total})`;
+            addActivity("\u{1F3E2}", `[${event.turn}/${event.total}] ${event.name} - ${event.address}`, "");
+            break;
+
+          case "tool_call":
+            addActivity("\u{1F50E}", `Calling ${event.tool} for turn ${event.turn}`, "activity-log__text--muted");
+            break;
+
+          case "tool_payload":
+            addActivity(
+              "\u{1F6E0}\u{FE0F}",
+              `${event.tool} payload: ${event.result?.status || "ok"}${event.result?.error ? ` - ${event.result.error}` : ""}`,
+              event.status === "error" ? "activity-log__flag" : "activity-log__text--muted"
+            );
+            break;
+
+          case "tool_result":
+            addActivity("\u2699\u{FE0F}", `  ${event.tool}${event.sqft !== undefined ? ` (${event.sqft} sqft)` : ""}${event.max_legal !== undefined ? ` (max: ${event.max_legal})` : ""}`, "activity-log__text--muted");
+            break;
+
+          case "tool_error":
+            addActivity("\u26A0\u{FE0F}", `  ${event.tool} failed: ${event.error || "timeout"}`, "activity-log__flag");
+            break;
+
+          case "turn_done":
+            addActivity("\u{2705}", `Turn ${event.turn} complete`, "activity-log__text--muted");
+            break;
+
+          case "provider_done": {
+            const pct = 5 + (event.turn / event.total) * 90;
+            setProgress(pct);
+            if (event.flagged) {
+              addActivity("\u{1F6A9}", `  FLAGGED: licensed ${event.licensed} > max legal ${event.max_legal}`, "activity-log__flag");
+            } else {
+              addActivity("\u2705", `  OK`, "activity-log__text--muted");
+            }
+            break;
           }
+
+          case "complete":
+            setProgress(100);
+            loadingStatus.textContent = "Investigation complete";
+            addActivity("\u{1F3C1}", `Done - ${event.payload.flagged?.length || 0} flags found`, "");
+            lastPayload = event.payload;
+            addToHistory(query, event.payload);
+            // Brief delay so user can see the completion log
+            await new Promise(r => setTimeout(r, 600));
+            renderPayload(event.payload);
+            setStatusText(`Completed (${event.payload.status || "ok"})`);
+            break;
+
+          case "error":
+            throw new Error(event.error || "Investigation stream error");
         }
       }
-    } catch (error) {
-      showResults();
-      setStatusText("Investigation failed. Check network/backend.", true);
-      jsonPayload.textContent = formatCode({
-        error: String(error),
-        status: "frontend_request_failed",
-      });
-      copyJsonBtn.disabled = false;
-    } finally {
-      runBtn.disabled = false;
-      runBtn.textContent = "Run Investigation";
     }
-    } else {
-      // Online mode: regular non-streaming request
-      try {
-        const response = await fetch("/api/investigate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query,
-            offline: false,
-            max_turns: Number(turnsRange.value),
-          }),
-        });
-
-        if (!response.ok) {
-          const err = await response.json().catch(() => ({}));
-          throw new Error(err.detail || `HTTP ${response.status}`);
-        }
-
-        const payload = await response.json();
-        lastPayload = payload;
-        addToHistory(query, payload);
-        renderPayload(payload);
-        setStatusText(`Completed (${payload.status || "ok"})`);
-    } catch (error) {
-      showResults();
-      setStatusText("Investigation failed. Check network/backend.", true);
-      jsonPayload.textContent = formatCode({
-        error: String(error),
-        status: "frontend_request_failed",
-      });
-      copyJsonBtn.disabled = false;
-    } finally {
-      runBtn.disabled = false;
-      runBtn.textContent = "Run Investigation";
-    }
+  } catch (error) {
+    showResults();
+    setStatusText("Investigation failed. Check network/backend.", true);
+    jsonPayload.textContent = formatCode({
+      error: String(error),
+      status: "frontend_request_failed",
+    });
+    copyJsonBtn.disabled = false;
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = "Run Investigation";
   }
 });
 

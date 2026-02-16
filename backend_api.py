@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from agent.loop import run_investigation, _offline_investigation_stream
+from agent.loop import run_investigation, run_investigation_stream
 from config import FRONTEND_DIR, load_settings
 from tools.definitions import get_tool_definitions
 
@@ -110,18 +110,17 @@ def investigate(payload: InvestigateRequest, request: Request) -> Any:
         )
 
 
-def _sse_generator(query: str, max_turns: int) -> Generator[str, None, None]:
-    for event in _offline_investigation_stream(query, max_turns=max_turns):
+def _sse_generator(
+    query: str,
+    max_turns: int,
+    offline: bool = False,
+) -> Generator[str, None, None]:
+    for event in run_investigation_stream(query, max_turns=max_turns, offline=offline):
         yield f"data: {json.dumps(event, default=str)}\n\n"
 
 
 @app.post("/api/investigate/stream")
 def investigate_stream(payload: InvestigateRequest, request: Request):
-    if not payload.offline:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Streaming endpoint currently supports offline mode only. Use /api/investigate for online mode."},
-        )
     client_ip = request.client.host if request.client else "unknown"
     if _is_rate_limited(client_ip):
         return JSONResponse(
@@ -130,7 +129,7 @@ def investigate_stream(payload: InvestigateRequest, request: Request):
         )
     try:
         return StreamingResponse(
-            _sse_generator(payload.query, payload.max_turns),
+            _sse_generator(payload.query, payload.max_turns, offline=payload.offline),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
