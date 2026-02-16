@@ -1,4 +1,5 @@
 from agent.loop import run_investigation
+from agent.loop import _coerce_tool_payload
 
 
 def test_offline_investigation_returns_payload():
@@ -15,3 +16,19 @@ def test_offline_flags_physical_impossibility():
     assert isinstance(result["flagged"], list)
     assert len(result["flagged"]) >= 1
 
+
+def test_tool_payload_summary_handles_list_results():
+    payload = _coerce_tool_payload([{"status": "found", "business_name": "Windy City Care"}])
+    assert payload["status"] == "found"
+    assert payload["error"] is None
+
+
+def test_tool_payload_summary_extracts_error_from_list_results():
+    payload = _coerce_tool_payload(
+        [
+            {"status": "error", "error": "No records"},
+            {"status": "found", "business_name": "Fallback"},
+        ]
+    )
+    assert payload["status"] == "error"
+    assert payload["error"] == "No records"

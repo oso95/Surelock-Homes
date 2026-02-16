@@ -65,6 +65,29 @@ def _normalize_blocks(content: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def _coerce_tool_payload(result: Any) -> Dict[str, Any]:
+    if isinstance(result, dict):
+        return {
+            "status": result.get("status"),
+            "error": result.get("error"),
+        }
+    if isinstance(result, list):
+        if any(isinstance(item, dict) and item.get("status") for item in result):
+            status = next(
+                (item.get("status") for item in result if isinstance(item, dict) and item.get("status")),
+                "ok",
+            )
+            if status == "error":
+                first_error = next(
+                    (item.get("error") for item in result if isinstance(item, dict) and item.get("error")),
+                    "Unknown error",
+                )
+                return {"status": status, "error": first_error}
+            return {"status": status, "error": None}
+        return {"status": "ok", "error": None}
+    return {"status": "ok", "error": str(result) if result is not None and not isinstance(result, str) else None}
+
+
 def _compact_scalar(value: str, limit: int) -> str:
     text = str(value)
     if len(text) <= limit:
@@ -430,7 +453,7 @@ def _run_openrouter_investigation_stream(
                         "event": "tool_error",
                         "turn": turn,
                         "tool": tool_name,
-                        "error": result.get("error") or "Unknown error",
+                        "error": _coerce_tool_payload(result).get("error") or "Unknown error",
                     }
                 else:
                     yield {
@@ -459,10 +482,7 @@ def _run_openrouter_investigation_stream(
                     "turn": turn,
                     "tool": tool_name,
                     "status": tool_status,
-                    "result": {
-                        "status": result.get("status"),
-                        "error": result.get("error"),
-                    },
+                    "result": _coerce_tool_payload(result),
                 }
 
             raw_turns.append(turn_summary)
