@@ -68,7 +68,15 @@ def get_street_view(
                 "https://maps.googleapis.com/maps/api/streetview/metadata",
                 params={**params, "return_error_codes": True},
                 timeout=5,
-            ).json()
+            )
+            meta_payload = meta.json()
+            meta_status = str(meta_payload.get("status", "")).upper()
+            if meta_status not in {"OK", "ZERO_RESULTS"}:
+                message = meta_payload.get("status", "unknown_error")
+                if meta_payload.get("status") == "REQUEST_DENIED":
+                    raise RuntimeError(f"Street View denied: {meta_payload.get('error_message', message)}")
+                if meta_payload.get("status") not in {"ZERO_RESULTS"}:
+                    raise RuntimeError(f"Street View metadata error: {message}")
             img_resp = requests.get(
                 "https://maps.googleapis.com/maps/api/streetview",
                 params=params,
@@ -80,8 +88,8 @@ def get_street_view(
                 {
                     "heading": heading,
                     "image_base64": image_base64,
-                    "capture_date": meta.get("date", "unknown"),
-                    "status": meta.get("status", "unknown"),
+                    "capture_date": meta_payload.get("date", "unknown"),
+                    "status": meta_payload.get("status", "unknown"),
                 }
             )
     except Exception as exc:
@@ -102,4 +110,3 @@ def get_street_view(
     }
     cache_file.write_text(json.dumps(response, indent=2), encoding="utf-8")
     return response
-

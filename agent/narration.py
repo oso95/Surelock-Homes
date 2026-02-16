@@ -34,11 +34,13 @@ class InvestigationNarration:
     def to_markdown(self) -> str:
         sections = [
             "# Investigation Narrative",
-            "## Narration",
         ]
-        sections.extend(f"- {line}" for line in self.narration or ["No narration available."])
-        sections.extend(["", "## Assistant Text", ""])
-        sections.extend(f"- {line}" for line in self.assistant_text or ["No assistant narrative available."])
+        if self.narration:
+            sections.extend(f"- {line}" for line in self.narration)
+        elif self.assistant_text:
+            sections.extend(f"- {line}" for line in self.assistant_text)
+        else:
+            sections.append("- No narration available.")
         sections.extend(["", "## Thinking Trace", ""])
         sections.extend(f"- {line}" for line in self.thinking or ["Thinking not captured (offline mode)."])
         sections.extend(["", "## Tool Calls", ""])
@@ -66,4 +68,3 @@ class InvestigationNarration:
         output_path = output_dir / f"{run_id}.json"
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return output_path
-

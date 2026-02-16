@@ -10,6 +10,33 @@ from config import load_settings
 logger = logging.getLogger(__name__)
 
 
+def _find_place_candidates(address: str, api_key: str, timeout: int) -> List[Dict[str, Any]]:
+    queries = [
+        address,
+        f"{address} child care",
+        f"childcare {address}",
+    ]
+    for query in queries:
+        query = query.strip()
+        if not query:
+            continue
+        find_resp = requests.get(
+            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
+            params={"input": query, "inputtype": "textquery", "fields": "place_id,name,types", "key": api_key},
+            timeout=timeout,
+        )
+        find_resp.raise_for_status()
+        payload = find_resp.json()
+        status = str(payload.get("status", "")).upper()
+        if status not in {"OK", "ZERO_RESULTS"}:
+            message = payload.get("error_message", "Google Places request failed")
+            raise RuntimeError(f"findplacefromtext error {status}: {message}")
+        candidates = payload.get("candidates", [])
+        if candidates:
+            return candidates
+    return []
+
+
 def get_places_info(address: str) -> Dict[str, Any]:
     if not address:
         return {"status": "error", "error": "address is required"}
@@ -30,25 +57,30 @@ def get_places_info(address: str) -> Dict[str, Any]:
         }
 
     try:
-        find_resp = requests.get(
-            "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
-            params={"input": address, "inputtype": "textquery", "fields": "place_id,name,types", "key": settings.google_maps_api_key},
-            timeout=5,
-        )
-        find_resp.raise_for_status()
-        candidates = find_resp.json().get("candidates", [])
+        candidates = _find_place_candidates(address, settings.google_maps_api_key, timeout=5)
         if not candidates:
             return {"status": "not_found", "address": address, "error": "No place results"}
         place_id = candidates[0].get("place_id")
         details = requests.get(
             "https://maps.googleapis.com/maps/api/place/details/json",
-            params={"place_id": place_id, "fields": "business_status,rating,user_ratings_total,types,review", "key": settings.google_maps_api_key},
+            params={
+                "place_id": place_id,
+                "fields": "name,business_status,rating,user_ratings_total,types,review",
+                "key": settings.google_maps_api_key,
+            },
             timeout=5,
         )
-        detail_payload = details.json().get("result", {})
+        details.raise_for_status()
+        detail_payload = details.json()
+        detail_status = str(detail_payload.get("status", "")).upper()
+        if detail_status not in {"OK", "ZERO_RESULTS"}:
+            message = detail_payload.get("error_message", "Google Places detail request failed")
+            raise RuntimeError(f"place/details error {detail_status}: {message}")
+        detail_payload = detail_payload.get("result", {})
         return {
             "status": "ok",
             "address": address,
+            "place_name": detail_payload.get("name"),
             "business_type": ", ".join(detail_payload.get("types", [])),
             "operating_status": detail_payload.get("business_status"),
             "rating": detail_payload.get("rating"),
@@ -57,5 +89,4 @@ def get_places_info(address: str) -> Dict[str, Any]:
         }
     except Exception as exc:
         logger.warning("Google Places API call failed for %s", address, exc_info=True)
-        return {"status": "error", "address": address, "error": "Places lookup failed"}
-
+        return {"status": "error", "address": address, "error": str(exc) or "Places lookup failed"}

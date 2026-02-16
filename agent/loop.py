@@ -464,21 +464,44 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
 
         yield {"event": "provider_start", "turn": idx, "total": total, "name": name, "address": addr}
 
-        property_data = get_property_data(addr, state=state, offline=True)
+        try:
+            property_data = get_property_data(addr, state=state, offline=True)
+        except Exception as exc:
+            logger.warning("get_property_data failed for %s: %s", addr, exc)
+            property_data = {"building_sqft": 0, "status": "error", "error": str(type(exc).__name__)}
+            yield {"event": "tool_error", "turn": idx, "tool": "get_property_data", "error": type(exc).__name__}
         sqft = float(property_data.get("building_sqft", 0) or 0)
         yield {"event": "tool_result", "turn": idx, "tool": "get_property_data", "sqft": sqft}
 
         calc = calculate_max_capacity(sqft, state=state, usable_ratio=0.65)
         yield {"event": "tool_result", "turn": idx, "tool": "calculate_max_capacity", "max_legal": calc["max_legal_capacity"]}
 
-        places = get_places_info(addr)
-        yield {"event": "tool_result", "turn": idx, "tool": "get_places_info"}
+        try:
+            places = get_places_info(addr)
+        except Exception as exc:
+            logger.warning("get_places_info failed for %s: %s", addr, exc)
+            places = {"status": "error", "error": str(type(exc).__name__)}
+            yield {"event": "tool_error", "turn": idx, "tool": "get_places_info", "error": type(exc).__name__}
+        else:
+            yield {"event": "tool_result", "turn": idx, "tool": "get_places_info"}
 
-        licensing = check_licensing_status(name, state=state, address=addr)
-        yield {"event": "tool_result", "turn": idx, "tool": "check_licensing_status"}
+        try:
+            licensing = check_licensing_status(name, state=state, address=addr)
+        except Exception as exc:
+            logger.warning("check_licensing_status failed for %s: %s", name, exc)
+            licensing = {"status": "error", "error": str(type(exc).__name__)}
+            yield {"event": "tool_error", "turn": idx, "tool": "check_licensing_status", "error": type(exc).__name__}
+        else:
+            yield {"event": "tool_result", "turn": idx, "tool": "check_licensing_status"}
 
-        reg = check_business_registration(name, state=state, search_type="business")
-        yield {"event": "tool_result", "turn": idx, "tool": "check_business_registration"}
+        try:
+            reg = check_business_registration(name, state=state, search_type="business")
+        except Exception as exc:
+            logger.warning("check_business_registration failed for %s: %s", name, exc)
+            reg = {"status": "error", "error": str(type(exc).__name__)}
+            yield {"event": "tool_error", "turn": idx, "tool": "check_business_registration", "error": type(exc).__name__}
+        else:
+            yield {"event": "tool_result", "turn": idx, "tool": "check_business_registration"}
 
         turn_tools = [
             {"tool": "get_property_data", "input": {"address": addr, "state": state}, "result": property_data},

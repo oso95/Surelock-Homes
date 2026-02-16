@@ -31,6 +31,27 @@ def geocode_address(address: str) -> Dict[str, Any]:
             )
             resp.raise_for_status()
             payload = resp.json()
+            status = str(payload.get("status", "")).upper()
+            if status == "REQUEST_DENIED":
+                return {
+                    "status": "error",
+                    "address": address,
+                    "formatted_address": None,
+                    "lat": None,
+                    "lng": None,
+                    "valid": False,
+                    "error": payload.get("error_message", "Google geocoding request denied"),
+                }
+            if status not in {"OK", "ZERO_RESULTS"}:
+                return {
+                    "status": "error",
+                    "address": address,
+                    "formatted_address": None,
+                    "lat": None,
+                    "lng": None,
+                    "valid": False,
+                    "error": payload.get("error_message", f"Google geocode error: {status}"),
+                }
             result = payload.get("results", [])[0] if payload.get("results") else None
             if not result:
                 return {
@@ -73,4 +94,3 @@ def geocode_address(address: str) -> Dict[str, Any]:
         "lng": round(base_lng, 6),
         "valid": True,
     }
-

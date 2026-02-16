@@ -33,7 +33,11 @@ const toolCallList = document.getElementById("toolCallList");
 const toolCountBadge = document.getElementById("toolCountBadge");
 const timelineList = document.getElementById("timelineList");
 
+const historyList = document.getElementById("historyList");
+const clearHistoryBtn = document.getElementById("clearHistoryBtn");
+
 let lastPayload = null;
+let activeHistoryId = null;
 
 /* ==========================================================================
    View State Management
@@ -278,6 +282,14 @@ function renderNarrative(payload) {
     content = narration;
   } else if (assistantText.trim().length > 0) {
     content = assistantText;
+  }
+
+  const assistantSectionMarker = "\n## Assistant Text";
+  if (assistantSectionMarker.length > 0) {
+    const markerIndex = content.indexOf(assistantSectionMarker);
+    if (markerIndex >= 0) {
+      content = content.slice(0, markerIndex).trim();
+    }
   }
 
   if (!content.trim()) {
@@ -568,7 +580,7 @@ runBtn.addEventListener("click", async () => {
     return;
   }
 
-  const isOffline = !offlineToggle.checked;
+  const isOffline = offlineToggle.checked;
 
   runBtn.disabled = true;
   runBtn.textContent = "Running\u2026";
@@ -635,6 +647,10 @@ runBtn.addEventListener("click", async () => {
               addActivity("\u{2699}\u{FE0F}", `  ${event.tool}${event.sqft !== undefined ? ` (${event.sqft} sqft)` : ""}${event.max_legal !== undefined ? ` (max: ${event.max_legal})` : ""}`, "activity-log__text--muted");
               break;
 
+            case "tool_error":
+              addActivity("\u{26A0}\u{FE0F}", `  ${event.tool} failed: ${event.error || "timeout"}`, "activity-log__flag");
+              break;
+
             case "provider_done": {
               const pct = 5 + (event.turn / event.total) * 90;
               setProgress(pct);
@@ -651,6 +667,7 @@ runBtn.addEventListener("click", async () => {
               loadingStatus.textContent = "Investigation complete";
               addActivity("\u{1F3C1}", `Done - ${event.payload.flagged?.length || 0} flags found`, "");
               lastPayload = event.payload;
+              addToHistory(query, event.payload);
               // Brief delay so user can see the completion log
               await new Promise(r => setTimeout(r, 600));
               renderPayload(event.payload);
@@ -671,23 +688,29 @@ runBtn.addEventListener("click", async () => {
       runBtn.disabled = false;
       runBtn.textContent = "Run Investigation";
     }
-  } else {
-    // Online mode: regular non-streaming request
-    try {
-      const response = await fetch("/api/investigate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+    } else {
+      // Online mode: regular non-streaming request
+      try {
+        const response = await fetch("/api/investigate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query,
-          offline: false,
-          max_turns: Number(turnsRange.value),
-        }),
-      });
+            offline: false,
+            max_turns: Number(turnsRange.value),
+          }),
+        });
 
-      const payload = await response.json();
-      lastPayload = payload;
-      renderPayload(payload);
-      setStatusText(`Completed (${payload.status || "ok"})`);
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        lastPayload = payload;
+        addToHistory(query, payload);
+        renderPayload(payload);
+        setStatusText(`Completed (${payload.status || "ok"})`);
     } catch (error) {
       showResults();
       setStatusText("Investigation failed. Check network/backend.", true);
@@ -711,9 +734,9 @@ const OFFLINE_PREFERENCE_KEY = "surelock_offline_mode";
 
 function updateModeHint() {
   if (offlineToggle.checked) {
-    modeHint.textContent = "Online mode";
-  } else {
     modeHint.textContent = "Offline mode";
+  } else {
+    modeHint.textContent = "Online mode";
   }
   const toggleLabel = offlineToggle.closest("[role='switch']");
   if (toggleLabel) {
@@ -745,10 +768,131 @@ copyJsonBtn.addEventListener("click", async () => {
 });
 
 /* ==========================================================================
+   Investigation History (localStorage)
+   ========================================================================== */
+
+const HISTORY_KEY = "surelock_history";
+const HISTORY_MAX = 20;
+
+function loadHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(entries) {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+}
+
+function addToHistory(query, payload) {
+  const entries = loadHistory();
+  const flags = Array.isArray(payload.flagged) ? payload.flagged.length : 0;
+  const providers = payload.provider_count ?? 0;
+  const mode = payload.mode === "agent" ? "Online" : "Offline";
+
+  const entry = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    query,
+    timestamp: Date.now(),
+    flags,
+    providers,
+    mode,
+    payload,
+  };
+
+  entries.unshift(entry);
+  if (entries.length > HISTORY_MAX) entries.length = HISTORY_MAX;
+  saveHistory(entries);
+  activeHistoryId = entry.id;
+  renderHistory();
+}
+
+function removeFromHistory(id) {
+  const entries = loadHistory().filter(e => e.id !== id);
+  saveHistory(entries);
+  if (activeHistoryId === id) activeHistoryId = null;
+  renderHistory();
+}
+
+function clearHistory() {
+  localStorage.removeItem(HISTORY_KEY);
+  activeHistoryId = null;
+  renderHistory();
+}
+
+function formatHistoryTime(ts) {
+  const d = new Date(ts);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHrs = Math.floor(diffMins / 60);
+  if (diffHrs < 24) return `${diffHrs}h ago`;
+  const diffDays = Math.floor(diffHrs / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return d.toLocaleDateString();
+}
+
+function renderHistory() {
+  const entries = loadHistory();
+  historyList.innerHTML = "";
+
+  if (entries.length === 0) {
+    historyList.innerHTML = '<li class="history-list__empty">No investigations yet.</li>';
+    return;
+  }
+
+  entries.forEach(entry => {
+    const li = document.createElement("li");
+    li.className = "history-item" + (entry.id === activeHistoryId ? " history-item--active" : "");
+
+    const flagsHtml = entry.flags > 0
+      ? `<span class="history-item__flags">${entry.flags} flag${entry.flags > 1 ? "s" : ""}</span>`
+      : "";
+    const metaParts = [entry.mode, `${entry.providers}p`, flagsHtml].filter(Boolean).join(" &middot; ");
+
+    li.innerHTML = `
+      <span class="history-item__query" title="${escapeHtml(entry.query)}">${escapeHtml(entry.query)}</span>
+      <button class="history-item__delete" title="Remove" data-history-delete="${escapeHtml(entry.id)}">&times;</button>
+      <span class="history-item__meta">${metaParts}</span>
+      <span class="history-item__time">${formatHistoryTime(entry.timestamp)}</span>
+    `;
+
+    li.addEventListener("click", (e) => {
+      if (e.target.closest("[data-history-delete]")) return;
+      activeHistoryId = entry.id;
+      lastPayload = entry.payload;
+      queryInput.value = entry.query;
+      renderPayload(entry.payload);
+      setStatusText("Loaded from history.");
+      renderHistory();
+    });
+
+    const deleteBtn = li.querySelector("[data-history-delete]");
+    if (deleteBtn) {
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        removeFromHistory(entry.id);
+      });
+    }
+
+    historyList.appendChild(li);
+  });
+}
+
+clearHistoryBtn.addEventListener("click", () => {
+  clearHistory();
+});
+
+/* ==========================================================================
    Init
    ========================================================================== */
 
 restoreModePreference();
 turnsValue.textContent = turnsRange.value;
 checkConnection();
+renderHistory();
 showEmpty();

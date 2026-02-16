@@ -735,6 +735,135 @@ pre {
 
 details summary { cursor: pointer; font-weight: 700; font-size: 0.9rem; }
 
+/* --- History panel --- */
+.history-panel {
+  background: var(--sidebar-bg);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+  color: var(--sidebar-text);
+}
+
+.history-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.history-panel__title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--sidebar-label);
+  margin: 0;
+}
+
+.history-panel__clear {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  font-family: inherit;
+  transition: color 0.15s, background 0.15s;
+}
+
+.history-panel__clear:hover {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.3rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.history-list__empty {
+  color: #64748b;
+  font-size: 0.8rem;
+  font-style: italic;
+  padding: 0.3rem 0;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 0.4rem;
+  padding: 0.45rem 0.55rem;
+  background: #0f172a;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.history-item:hover {
+  border-color: #475569;
+  background: #1a2538;
+}
+
+.history-item--active {
+  border-color: var(--blue);
+  background: #172554;
+}
+
+.history-item__query {
+  font-size: 0.8rem;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.history-item__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.history-item__flags {
+  color: var(--red);
+  font-weight: 700;
+}
+
+.history-item__time {
+  font-size: 0.7rem;
+  color: #475569;
+  grid-column: 1 / -1;
+}
+
+.history-item__delete {
+  background: none;
+  border: none;
+  color: #475569;
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.history-item:hover .history-item__delete {
+  opacity: 1;
+}
+
+.history-item__delete:hover {
+  color: #fca5a5;
+}
+
 /* ==========================================================================
    7. Animations
    ========================================================================== */

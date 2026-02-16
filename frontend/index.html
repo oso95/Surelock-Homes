@@ -27,7 +27,7 @@
             <label class="toggle-switch" role="switch" aria-checked="false">
               <input id="offlineToggle" type="checkbox" class="toggle-switch__input" />
               <span class="toggle-switch__slider"></span>
-              <span class="toggle-switch__label" id="modeHint">Offline mode</span>
+              <span class="toggle-switch__label" id="modeHint">Online mode</span>
             </label>
           </div>
 
@@ -53,6 +53,16 @@
           </div>
 
           <p id="runMessage" class="status-text" role="status" aria-live="polite">Ready.</p>
+        </div>
+
+        <div class="history-panel" id="historyPanel">
+          <div class="history-panel__header">
+            <h3 class="history-panel__title">History</h3>
+            <button id="clearHistoryBtn" type="button" class="history-panel__clear" title="Clear all history">Clear</button>
+          </div>
+          <ul id="historyList" class="history-list">
+            <li class="history-list__empty">No investigations yet.</li>
+          </ul>
         </div>
       </aside>
 
