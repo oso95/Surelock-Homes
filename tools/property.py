@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -16,28 +17,39 @@ HENNEPIN_API_URL = (
 COOK_API_URL = (
     "https://gis.cookcountyil.gov/traditional/rest/services/cookVwrDynmc/MapServer/44/query"
 )
+_GIS_TIMEOUT_SECONDS = 8.0
 
 
 ADDRESS_RE = re.compile(r"^(?P<number>\d+)\s+(?P<rest>.+)$")
 SUFFIXES = {
+    "ST": "ST",
     "STREET": "ST",
     "ST.": "ST",
+    "AVE": "AVE",
     "AVENUE": "AVE",
     "AVE.": "AVE",
+    "RD": "RD",
     "ROAD": "RD",
     "RD.": "RD",
+    "BLVD": "BLVD",
     "BOULEVARD": "BLVD",
     "BLVD.": "BLVD",
+    "CT": "CT",
     "COURT": "CT",
     "CT.": "CT",
+    "LN": "LN",
     "LANE": "LN",
     "LN.": "LN",
+    "PL": "PL",
     "PLACE": "PL",
     "PL.": "PL",
+    "DR": "DR",
     "DRIVE": "DR",
     "DR.": "DR",
+    "TER": "TER",
     "TERRACE": "TER",
     "TER.": "TER",
+    "PKWY": "PKWY",
     "PARKWAY": "PKWY",
     "PKWY.": "PKWY",
 }
@@ -51,6 +63,50 @@ DIRECTIONS = {
     "W": "W",
     "WEST": "W",
 }
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_zip(address: str) -> str:
+    if not address:
+        return ""
+    match = re.search(r"\b(\d{5})\b", address)
+    return match.group(1) if match else ""
+
+
+def _address_matches(address_target: str, address_row: str) -> bool:
+    parsed_target = _parse_address(address_target)
+    parsed_row = _parse_address(address_row)
+
+    if not parsed_target or not parsed_row:
+        return _normalize_addr(address_target) == _normalize_addr(address_row)
+
+    if parsed_target.get("house") != parsed_row.get("house"):
+        return False
+
+    if parsed_target.get("street") != parsed_row.get("street"):
+        return False
+
+    if (
+        parsed_target.get("suffix")
+        and parsed_row.get("suffix")
+        and parsed_target["suffix"] != parsed_row["suffix"]
+    ):
+        return False
+
+    if (
+        parsed_target.get("direction")
+        and parsed_row.get("direction")
+        and parsed_target["direction"] != parsed_row["direction"]
+    ):
+        return False
+
+    target_zip = _extract_zip(address_target)
+    row_zip = _extract_zip(address_row)
+    if target_zip and row_zip and target_zip != row_zip:
+        return False
+
+    return True
 
 
 def _normalize_addr(address: str) -> str:
@@ -76,14 +132,29 @@ def _to_int(value: object, default: int = 0) -> int:
 
 
 def _parse_address(address: str) -> Dict[str, str]:
-    text = _normalize_addr(address).upper().strip()
+    if not address:
+        return {}
+
+    # Prefer the street-level portion before the first comma so \"123 Main St, City\"
+    # still parses as the actual street address.
+    text = (address or "").replace(".", "").split(",")[0].strip().upper()
+    text = re.sub(r"\s+", " ", text).strip()
     match = ADDRESS_RE.match(text)
     if not match:
         return {}
 
     number = match.group("number")
-    rest = match.group("rest").replace("  ", " ").strip()
+    rest = re.sub(r"\s+", " ", match.group("rest")).strip()
     tokens = rest.split()
+    if not tokens:
+        return {"house": number}
+
+    # Remove trailing ZIP/state artifacts when callers pass a full address.
+    if tokens and re.fullmatch(r"\d{5}", tokens[-1]):
+        tokens = tokens[:-1]
+    if tokens and tokens[-1] in {"IL", "IL.", "MN", "MN.", "WI", "WI.", "CA", "CA.", "NY", "NY."}:
+        tokens = tokens[:-1]
+
     if not tokens:
         return {"house": number}
 
@@ -95,11 +166,18 @@ def _parse_address(address: str) -> Dict[str, str]:
         return {"house": number}
 
     suffix = ""
-    if tokens[-1] in SUFFIXES:
-        suffix = SUFFIXES[tokens[-1]]
-        tokens = tokens[:-1]
+    suffix_index: int | None = None
+    for idx, token in enumerate(tokens):
+        if token in SUFFIXES:
+            suffix_index = idx
+            suffix = SUFFIXES[token]
+            break
+    if suffix_index is not None:
+        street_tokens = tokens[:suffix_index]
+    else:
+        street_tokens = tokens
 
-    street = " ".join(tokens)
+    street = " ".join(street_tokens)
     return {"house": number, "direction": direction, "street": street, "suffix": suffix}
 
 
@@ -137,7 +215,7 @@ def _query_hennepin(address: str) -> Dict[str, Any]:
         "returnGeometry": "false",
     }
 
-    response = requests.get(HENNEPIN_API_URL, params=params, timeout=30)
+    response = requests.get(HENNEPIN_API_URL, params=params, timeout=_GIS_TIMEOUT_SECONDS)
     response.raise_for_status()
     payload = response.json()
     features = payload.get("features") or []
@@ -185,7 +263,7 @@ def _query_cook(address: str) -> Dict[str, Any]:
         "returnGeometry": "false",
     }
 
-    response = requests.get(COOK_API_URL, params=params, timeout=30)
+    response = requests.get(COOK_API_URL, params=params, timeout=_GIS_TIMEOUT_SECONDS)
     response.raise_for_status()
     features = response.json().get("features") or []
     if not features:
@@ -217,38 +295,65 @@ def get_property_data(
         return {"status": "error", "error": "address is required"}
 
     state_key = (state or "").upper()
-    normalized_target = _normalize_addr(address)
 
     if not offline and state_key == "MN":
-        live = _query_hennepin(address)
-        if live:
-            return {
-                "status": "found",
-                "source": "live_hennepin",
-                "address": live.get("address", address),
-                "building_sqft": live.get("building_sqft", 0.0),
-                "lot_size": live.get("lot_size", ""),
-                "zoning": live.get("zoning", ""),
-                "property_class": live.get("property_class", ""),
-                "year_built": live.get("year_built", 0),
-                "county": county or "Hennepin",
-                "state": "MN",
-            }
+        live_status = None
+        live_error: str | None = None
+        try:
+            live = _query_hennepin(address)
+            if live:
+                return {
+                    "status": "found",
+                    "source": "live_hennepin",
+                    "address": live.get("address", address),
+                    "building_sqft": live.get("building_sqft", 0.0),
+                    "lot_size": live.get("lot_size", ""),
+                    "zoning": live.get("zoning", ""),
+                    "property_class": live.get("property_class", ""),
+                    "year_built": live.get("year_built", 0),
+                    "county": county or "Hennepin",
+                    "state": "MN",
+                }
+        except Exception as exc:
+            live_status = "failed"
+            live_error = str(exc)
+            logger.warning("Live Hennepin query failed for %s: %s", address, exc, exc_info=True)
+        if live_status:
+            return _fallback_property_result(
+                address=address,
+                state_key=state_key,
+                county=county,
+                live_error=live_error,
+            )
     elif not offline and state_key == "IL":
-        live = _query_cook(address)
-        if live:
-            return {
-                "status": "found",
-                "source": "live_cook",
-                "address": live.get("address", address),
-                "building_sqft": live.get("building_sqft", 0.0),
-                "lot_size": live.get("lot_size", ""),
-                "zoning": live.get("zoning", ""),
-                "property_class": live.get("property_class", ""),
-                "year_built": live.get("year_built", 0),
-                "county": county or "Cook",
-                "state": "IL",
-            }
+        live_status = None
+        live_error: str | None = None
+        try:
+            live = _query_cook(address)
+            if live:
+                return {
+                    "status": "found",
+                    "source": "live_cook",
+                    "address": live.get("address", address),
+                    "building_sqft": live.get("building_sqft", 0.0),
+                    "lot_size": live.get("lot_size", ""),
+                    "zoning": live.get("zoning", ""),
+                    "property_class": live.get("property_class", ""),
+                    "year_built": live.get("year_built", 0),
+                    "county": county or "Cook",
+                    "state": "IL",
+                }
+        except Exception as exc:
+            live_status = "failed"
+            live_error = str(exc)
+            logger.warning("Live Cook query failed for %s: %s", address, exc, exc_info=True)
+        if live_status:
+            return _fallback_property_result(
+                address=address,
+                state_key=state_key,
+                county=county,
+                live_error=live_error,
+            )
 
     source_paths = []
     if state_key == "MN":
@@ -263,7 +368,7 @@ def get_property_data(
         if not path.exists():
             continue
         for row in _read_csv(path):
-            if _normalize_addr(row.get("address", "")) == normalized_target:
+            if _address_matches(address, row.get("address", "")):
                 return {
                     "status": "found",
                     "source": path.name,
@@ -289,4 +394,56 @@ def get_property_data(
         "county": county or "",
         "state": state_key,
         "error": "no parcel match in local datasets",
+    }
+
+
+def _fallback_property_result(
+    *,
+    address: str,
+    state_key: str,
+    county: str | None = None,
+    live_error: str | None = None,
+) -> Dict[str, Any]:
+    fallback_paths = []
+    if state_key == "MN":
+        fallback_paths.append(DATA_DIR / "hennepin_parcels.csv")
+    elif state_key == "IL":
+        fallback_paths.append(DATA_DIR / "cook_parcels.csv")
+    else:
+        fallback_paths.append(DATA_DIR / "hennepin_parcels.csv")
+        fallback_paths.append(DATA_DIR / "cook_parcels.csv")
+
+    for path in fallback_paths:
+        if not path.exists():
+            continue
+        for row in _read_csv(path):
+            if _address_matches(address, row.get("address", "")):
+                return {
+                    "status": "found",
+                    "source": f"{path.name}.fallback",
+                    "address": row.get("address", ""),
+                    "building_sqft": float(row.get("building_sqft", 0) or 0),
+                    "lot_size": row.get("lot_size", ""),
+                    "zoning": row.get("zoning", ""),
+                    "property_class": row.get("property_class", ""),
+                    "year_built": int(float(row.get("year_built", 0) or 0)),
+                    "county": row.get("county", county or row.get("county", "")),
+                    "state": row.get("state", state_key),
+                    "live_error": live_error,
+                    "live_fallback": True,
+                }
+
+    return {
+        "status": "not_found",
+        "source": "fallback",
+        "address": address,
+        "building_sqft": 0.0,
+        "lot_size": "",
+        "zoning": "",
+        "property_class": "",
+        "year_built": 0,
+        "county": county or "",
+        "state": state_key,
+        "error": "no parcel match in local datasets",
+        "live_error": live_error,
     }

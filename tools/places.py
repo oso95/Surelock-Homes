@@ -1,22 +1,35 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List
 
 import requests
 
 from config import load_settings
+from tools.geocoding import geocode_address
 
 logger = logging.getLogger(__name__)
 
 
+def _is_childcare_candidate(candidate: Dict[str, Any]) -> bool:
+    fields = [str(candidate.get("name", ""))]
+    fields.extend(str(type_value) for type_value in candidate.get("types", []))
+    haystack = " ".join(fields).lower()
+    return any(token in haystack for token in ("daycare", "day care", "child", "preschool", "school", "nursery"))
+
+
 def _find_place_candidates(address: str, api_key: str, timeout: int) -> List[Dict[str, Any]]:
-    queries = [
-        address,
-        f"{address} child care",
-        f"childcare {address}",
+    addr = address.strip()
+    query_plan = [
+        (f"childcare {addr}", True),
+        (f"child care {addr}", True),
+        (f"daycare {addr}", True),
+        (f"preschool {addr}", True),
+        (f"kids center {addr}", True),
+        (addr, False),
     ]
-    for query in queries:
+    for query, require_childcare in query_plan:
         query = query.strip()
         if not query:
             continue
@@ -32,9 +45,33 @@ def _find_place_candidates(address: str, api_key: str, timeout: int) -> List[Dic
             message = payload.get("error_message", "Google Places request failed")
             raise RuntimeError(f"findplacefromtext error {status}: {message}")
         candidates = payload.get("candidates", [])
-        if candidates:
-            return candidates
+        for candidate in candidates:
+            if not require_childcare or _is_childcare_candidate(candidate):
+                return [candidate]
     return []
+
+
+def _house_number(address: str) -> str:
+    match = re.search(r"\b(\d+)\b", address or "")
+    return match.group(1) if match else ""
+
+
+def _build_no_place_result(address: str, note: str) -> Dict[str, Any]:
+    geocoded = geocode_address(address)
+    return {
+        "status": "no_place",
+        "address": address,
+        "formatted_address": geocoded.get("formatted_address"),
+        "business_type": "address_only",
+        "operating_status": "not_listed_as_business",
+        "rating": None,
+        "review_count": 0,
+        "recent_reviews": [],
+        "latitude": geocoded.get("lat"),
+        "longitude": geocoded.get("lng"),
+        "notes": geocoded.get("error") or note,
+        "geocode_status": geocoded.get("status"),
+    }
 
 
 def get_places_info(address: str) -> Dict[str, Any]:
@@ -59,13 +96,14 @@ def get_places_info(address: str) -> Dict[str, Any]:
     try:
         candidates = _find_place_candidates(address, settings.google_maps_api_key, timeout=5)
         if not candidates:
-            return {"status": "not_found", "address": address, "error": "No place results"}
+            return _build_no_place_result(address, "No Google Places childcare record found; address was geocoded.")
+
         place_id = candidates[0].get("place_id")
         details = requests.get(
             "https://maps.googleapis.com/maps/api/place/details/json",
             params={
                 "place_id": place_id,
-                "fields": "name,business_status,rating,user_ratings_total,types,review",
+                "fields": "name,business_status,rating,user_ratings_total,types,reviews,geometry,formatted_address",
                 "key": settings.google_maps_api_key,
             },
             timeout=5,
@@ -76,16 +114,30 @@ def get_places_info(address: str) -> Dict[str, Any]:
         if detail_status not in {"OK", "ZERO_RESULTS"}:
             message = detail_payload.get("error_message", "Google Places detail request failed")
             raise RuntimeError(f"place/details error {detail_status}: {message}")
+
         detail_payload = detail_payload.get("result", {})
+        geometry = detail_payload.get("geometry", {}).get("location", {})
+        formatted_address = detail_payload.get("formatted_address", "")
+        expected_house = _house_number(address)
+
+        if expected_house and formatted_address:
+            has_house_match = bool(re.search(rf"\\b{re.escape(expected_house)}\\b", formatted_address))
+            if not has_house_match:
+                return _build_no_place_result(address, "Place result matched no matching street number; using geocode fallback.")
+
         return {
             "status": "ok",
             "address": address,
             "place_name": detail_payload.get("name"),
+            "formatted_address": detail_payload.get("formatted_address"),
             "business_type": ", ".join(detail_payload.get("types", [])),
             "operating_status": detail_payload.get("business_status"),
             "rating": detail_payload.get("rating"),
             "review_count": detail_payload.get("user_ratings_total", 0),
             "recent_reviews": detail_payload.get("reviews", [])[:3],
+            "latitude": geometry.get("lat"),
+            "longitude": geometry.get("lng"),
+            "notes": "Google Places record found.",
         }
     except Exception as exc:
         logger.warning("Google Places API call failed for %s", address, exc_info=True)
