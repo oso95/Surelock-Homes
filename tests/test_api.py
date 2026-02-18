@@ -35,5 +35,5 @@ def test_stream_route_returns_error_event_on_generator_failure():
         response = client.post("/api/investigate/stream", json={"query": "Investigate Illinois providers in ZIP 60612"})
         assert response.status_code == 200
         body = response.text
-        assert '"event":"error"' in body
+        assert '"event": "error"' in body or '"event":"error"' in body
         assert "stream exploded" in body

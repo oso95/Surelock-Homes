@@ -45,6 +45,13 @@ class Settings:
     thinking_budget_tokens: int = _env_int("THINKING_BUDGET_TOKENS", 10000)
     max_tokens: int = _env_int("MAX_TOKENS", 16000)
     tool_timeout_seconds: int = _env_int("TOOL_TIMEOUT_SECONDS", 30)
+    gis_timeout_seconds: int = _env_int("GIS_TIMEOUT_SECONDS", 8)
+    google_api_timeout_seconds: int = _env_int("GOOGLE_API_TIMEOUT_SECONDS", 5)
+    socrata_timeout_seconds: int = _env_int("SOCRATA_TIMEOUT_SECONDS", 10)
+    probe_timeout_seconds: int = _env_int("PROBE_TIMEOUT_SECONDS", 10)
+    cache_max_age_hours: int = _env_int("CACHE_MAX_AGE_HOURS", 12)
+    rate_limit_max: int = _env_int("RATE_LIMIT_MAX", 10)
+    rate_limit_window: int = _env_int("RATE_LIMIT_WINDOW", 60)
 
 
 def load_settings() -> Settings:
@@ -61,6 +68,13 @@ def load_settings() -> Settings:
         thinking_budget_tokens=_env_int("THINKING_BUDGET_TOKENS", 10000),
         max_tokens=_env_int("MAX_TOKENS", 16000),
         tool_timeout_seconds=_env_int("TOOL_TIMEOUT_SECONDS", 30),
+        gis_timeout_seconds=_env_int("GIS_TIMEOUT_SECONDS", 8),
+        google_api_timeout_seconds=_env_int("GOOGLE_API_TIMEOUT_SECONDS", 5),
+        socrata_timeout_seconds=_env_int("SOCRATA_TIMEOUT_SECONDS", 10),
+        probe_timeout_seconds=_env_int("PROBE_TIMEOUT_SECONDS", 10),
+        cache_max_age_hours=_env_int("CACHE_MAX_AGE_HOURS", 12),
+        rate_limit_max=_env_int("RATE_LIMIT_MAX", 10),
+        rate_limit_window=_env_int("RATE_LIMIT_WINDOW", 60),
     )
 
 

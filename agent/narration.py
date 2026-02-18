@@ -32,24 +32,15 @@ class InvestigationNarration:
             self.assistant_text.append(value)
 
     def to_markdown(self) -> str:
-        sections = [
-            "# Investigation Narrative",
-        ]
+        # Return only the narrative content.  Thinking trace and tool calls
+        # are rendered in their own UI sections, so including them here would
+        # cause duplication.  Prefer assistant_text (the LLM's full formatted
+        # output) over the narration list (which loses formatting).
+        if self.assistant_text:
+            return "\n\n".join(self.assistant_text)
         if self.narration:
-            sections.extend(f"- {line}" for line in self.narration)
-        elif self.assistant_text:
-            sections.extend(f"- {line}" for line in self.assistant_text)
-        else:
-            sections.append("- No narration available.")
-        sections.extend(["", "## Thinking Trace", ""])
-        sections.extend(f"- {line}" for line in self.thinking or ["Thinking not captured (offline mode)."])
-        sections.extend(["", "## Tool Calls", ""])
-        if not self.tool_calls:
-            sections.append("No tool calls were executed.")
-        else:
-            for item in self.tool_calls:
-                sections.append(f"- {item['tool']}: args={item['arguments']}")
-        return "\n".join(sections)
+            return "\n\n".join(self.narration)
+        return "No narrative available."
 
     def as_dict(self) -> Dict[str, Any]:
         return {

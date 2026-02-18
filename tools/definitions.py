@@ -55,6 +55,7 @@ def get_tool_definitions():
                 "type": "object",
                 "properties": {
                     "address": {"type": "string"},
+                    "name": {"type": "string", "description": "Business or provider name to search for (improves match accuracy)"},
                 },
                 "required": ["address"],
             },

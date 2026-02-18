@@ -37,8 +37,9 @@ from tools.geocoding import geocode_address
 
 
 _OPENROUTER_MAX_CONTEXT_CHARS = 180000
-_OPENROUTER_TOOL_PAYLOAD_CHARS = 8000
-_OPENROUTER_MAX_LIST_ITEMS = 6
+_OPENROUTER_TOOL_PAYLOAD_CHARS = 60000   # must fit 200 providers × ~250 chars each after compaction
+_OPENROUTER_MAX_MEDIA_ITEMS = 6          # images, reviews, features — bulky, rarely need all
+_OPENROUTER_MAX_LIST_ITEMS = 200         # provider search results — LLM must see all to triage
 
 
 def _normalize_blocks(content: Any) -> List[Dict[str, Any]]:
@@ -109,7 +110,7 @@ def _summarize_for_model(value: Any, max_depth: int = 2) -> Any:
                     "count": len(item),
                     "sample": [
                         _summarize_for_model(entry, max_depth=max_depth - 1)
-                        for entry in item[:_OPENROUTER_MAX_LIST_ITEMS]
+                        for entry in item[:_OPENROUTER_MAX_MEDIA_ITEMS]
                     ],
                 }
             elif isinstance(item, list):
@@ -139,10 +140,26 @@ def _summarize_for_model(value: Any, max_depth: int = 2) -> Any:
 
 
 def _infer_state_and_zip(query: str) -> Tuple[str, str | None]:
-    lower = query.lower()
-    state = "IL" if "il" in lower or "illinois" in lower else "MN"
-    state = "MN" if "mn" in lower or "minnesota" in lower else state
     zip_match = re.search(r"\b\d{5}\b", query)
+    # Use word-boundary matching to avoid false positives (e.g. "building" matching "il")
+    if re.search(r"\billinois\b", query, re.IGNORECASE) or re.search(r"\bIL\b", query):
+        state = "IL"
+    elif re.search(r"\bminnesota\b", query, re.IGNORECASE) or re.search(r"\bMN\b", query):
+        state = "MN"
+    elif zip_match:
+        # Infer state from ZIP code prefix when no explicit state is mentioned
+        zip_prefix = zip_match.group(0)[:3]
+        if zip_prefix in ("600", "601", "602", "603", "604", "605", "606", "607", "608", "609",
+                          "610", "611", "612", "613", "614", "615", "616", "617", "618", "619",
+                          "620", "622", "623", "624", "625", "626", "627", "628", "629"):
+            state = "IL"
+        elif zip_prefix in ("550", "551", "553", "554", "555", "556", "557", "558", "559",
+                            "560", "561", "562", "563", "564", "565", "566", "567"):
+            state = "MN"
+        else:
+            state = "IL"  # Default to IL if ZIP doesn't match known ranges
+    else:
+        state = "IL"  # Default to IL rather than MN
     return state, zip_match.group(0) if zip_match else None
 
 
@@ -166,6 +183,235 @@ def _sanitize_error(exc: Exception) -> str:
     return raw
 
 
+def _normalize_addr(addr: str) -> str:
+    """Normalize address for matching: strip city/state/zip, standardize abbreviations."""
+    a = str(addr).upper().strip()
+    a = a.split(",")[0].strip()  # Remove city, state, zip
+    for full, abbr in [
+        ("STREET", "ST"), ("AVENUE", "AVE"), ("ROAD", "RD"), ("DRIVE", "DR"),
+        ("BOULEVARD", "BLVD"), ("PLACE", "PL"), ("COURT", "CT"), ("LANE", "LN"),
+        ("WEST", "W"), ("EAST", "E"), ("NORTH", "N"), ("SOUTH", "S"),
+    ]:
+        a = re.sub(r"\b" + full + r"\b", abbr, a)
+    return re.sub(r"\s+", " ", a).strip()
+
+
+def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract provider_count and flagged list from accumulated tool call results."""
+    # 1. Provider count: only from the FIRST search call (target area)
+    provider_count = 0
+    first_search_seen = False
+
+    # 2. Build provider capacity from ALL search results (for flag matching)
+    search_providers: Dict[str, Dict[str, Any]] = {}  # normalized_addr -> {name, capacity}
+
+    # 3. Property data: addr_arg -> sqft
+    property_sqft: Dict[str, float] = {}
+
+    # 4. Capacity calcs: sqft -> max_legal_capacity
+    max_caps: Dict[float, int] = {}
+
+    # 5. Licensing overrides: addr_arg -> capacity
+    licensing_cap: Dict[str, Dict[str, Any]] = {}
+
+    for tc in tool_calls:
+        tool = tc.get("tool", "")
+        result = tc.get("result")
+        args = tc.get("arguments", {})
+
+        if tool == "search_childcare_providers" and isinstance(result, list):
+            if not first_search_seen:
+                provider_count = len(result)
+                first_search_seen = True
+            for p in result:
+                norm = _normalize_addr(p.get("address", ""))
+                if norm:
+                    search_providers[norm] = {
+                        "name": p.get("name", ""),
+                        "capacity": int(p.get("capacity", 0) or 0),
+                    }
+
+        elif tool == "get_property_data" and isinstance(result, dict):
+            addr = args.get("address", "")
+            sqft = result.get("building_sqft", 0)
+            if addr and sqft:
+                property_sqft[addr] = float(sqft)
+
+        elif tool == "calculate_max_capacity" and isinstance(result, dict):
+            sqft = args.get("building_sqft", 0)
+            max_cap = result.get("max_legal_capacity", 0)
+            if sqft and max_cap:
+                max_caps[float(sqft)] = int(max_cap)
+
+        elif tool == "check_licensing_status" and isinstance(result, dict):
+            if result.get("status") == "found":
+                cap = int(result.get("capacity", 0) or 0)
+                addr = args.get("address", "")
+                name = args.get("provider_name", "")
+                if cap and (addr or name):
+                    licensing_cap[addr or name] = {"name": name, "capacity": cap}
+
+    # Build flags: for each property with a capacity calc, check if licensed > max
+    flagged: List[Dict[str, Any]] = []
+    seen_flags: set = set()
+
+    for addr_arg, sqft in property_sqft.items():
+        # Find the max legal capacity for this building's sqft
+        max_cap = max_caps.get(sqft)
+        if not max_cap:
+            for calc_sqft, calc_cap in max_caps.items():
+                if abs(calc_sqft - sqft) < 1.0:
+                    max_cap = calc_cap
+                    break
+        if not max_cap:
+            continue
+
+        # Find the licensed capacity — try licensing data first, then search results
+        licensed_cap = 0
+        provider_name = ""
+
+        # Try licensing results (keyed by addr_arg or provider_name)
+        if addr_arg in licensing_cap:
+            licensed_cap = licensing_cap[addr_arg]["capacity"]
+            provider_name = licensing_cap[addr_arg]["name"]
+
+        # Fall back to search results (match by normalized address)
+        if not licensed_cap:
+            norm = _normalize_addr(addr_arg)
+            if norm in search_providers:
+                licensed_cap = search_providers[norm]["capacity"]
+                provider_name = search_providers[norm]["name"]
+
+        if not provider_name:
+            norm = _normalize_addr(addr_arg)
+            if norm in search_providers:
+                provider_name = search_providers[norm]["name"]
+
+        if licensed_cap > max_cap and (provider_name, addr_arg) not in seen_flags:
+            seen_flags.add((provider_name, addr_arg))
+            flagged.append({
+                "provider_name": provider_name or "Unknown",
+                "address": addr_arg,
+                "licensed_capacity": licensed_cap,
+                "max_legal_capacity": max_cap,
+                "excess_capacity": licensed_cap - max_cap,
+                "building_sqft": sqft,
+                "flag": "licensed capacity exceeds physical maximum",
+            })
+
+    return {"provider_count": provider_count, "flagged": flagged}
+
+
+_MAX_CONTINUATION_NUDGES = 3
+
+
+_REPORT_MARKERS = (
+    "INVESTIGATION REPORT",
+    "PROVIDER DOSSIERS",
+    "EXPOSURE ESTIMATE",
+    "PATTERN ANALYSIS",
+    "CONFIDENCE CALIBRATION",
+    "Investigation complete",
+)
+
+
+def _report_already_written(assistant_text: List[str]) -> bool:
+    """Return True if the assistant has already produced a final investigation report."""
+    combined = " ".join(assistant_text)
+    marker_hits = sum(1 for m in _REPORT_MARKERS if m in combined)
+    return marker_hits >= 3
+
+
+def _continuation_nudge(
+    tool_calls: List[Dict[str, Any]],
+    current_turn: int,
+    max_turns: int,
+    *,
+    target_state: str = "",
+    target_zip: str = "",
+    assistant_text: List[str] | None = None,
+) -> str | None:
+    """Return a nudge message if the LLM stopped early with providers left to investigate."""
+    if current_turn >= max_turns:
+        return None
+
+    # Count how many times we've already nudged (avoid infinite loops)
+    nudge_count = sum(1 for tc in tool_calls if tc.get("tool") == "_nudge")
+    if nudge_count >= _MAX_CONTINUATION_NUDGES:
+        return None
+
+    # Count total providers from first search and how many have been investigated
+    total_providers = 0
+    first_search_seen = False
+    investigated_addrs: set = set()
+
+    for tc in tool_calls:
+        tool = tc.get("tool", "")
+        if tool == "search_childcare_providers" and isinstance(tc.get("result"), list) and not first_search_seen:
+            total_providers = len(tc["result"])
+            first_search_seen = True
+        elif tool == "get_property_data":
+            addr = tc.get("arguments", {}).get("address", "")
+            if addr:
+                investigated_addrs.add(addr)
+
+    if not total_providers:
+        return None
+
+    investigated = len(investigated_addrs)
+    remaining = total_providers - investigated
+    turns_left = max_turns - current_turn
+    report_written = bool(assistant_text and _report_already_written(assistant_text))
+
+    # If report is already written AND coverage is sufficient, stop cleanly
+    if report_written and (remaining < 5 or investigated >= total_providers * 0.7):
+        return None
+
+    # If report is written but coverage is poor, nudge to continue + update report
+    if report_written:
+        tool_calls.append({"tool": "_nudge", "arguments": {}, "status": "ok", "result": {}})
+        return (
+            f"You wrote the report but have only investigated {investigated} out of "
+            f"{total_providers} providers ({remaining} remaining). You still have "
+            f"{turns_left} turns left. Continue investigating the unchecked providers — "
+            f"pull property data and calculate max capacity for the ones you missed. "
+            f"Then write a brief ADDENDUM with any new findings at the end."
+        )
+
+    # No report yet — only nudge if significant providers remain uninvestigated
+    if remaining < 5 or investigated >= total_providers * 0.7:
+        return None
+
+    # Mark the nudge so we can count it
+    tool_calls.append({"tool": "_nudge", "arguments": {}, "status": "ok", "result": {}})
+
+    # Build scope reminder to prevent geographic drift
+    scope_reminder = ""
+    if target_state and target_zip:
+        scope_reminder = (
+            f" IMPORTANT: Stay focused on the original investigation area: "
+            f"state={target_state}, ZIP={target_zip}. Do not search providers in other states "
+            f"unless you have found a specific, documented cross-state connection "
+            f"(e.g., same registered agent operating in both states)."
+        )
+    elif target_state:
+        scope_reminder = (
+            f" IMPORTANT: Stay focused on the original investigation area: "
+            f"state={target_state}. Do not search providers in other states."
+        )
+
+    return (
+        f"You have investigated {investigated} out of {total_providers} providers and still have "
+        f"{turns_left} turns remaining. "
+        f"DO NOT write the final report yet — continue investigating remaining providers first. "
+        f"Writing the report now would waste remaining turns and leave the investigation incomplete. "
+        f"Focus on the ones you haven't checked yet — pull property data "
+        f"and calculate max capacity to check for physical impossibility. "
+        f"Save the report for your final "
+        f"turn.{scope_reminder}"
+    )
+
+
 def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _OPENROUTER_MAX_CONTEXT_CHARS) -> None:
     if max_chars <= 0:
         return
@@ -175,6 +421,13 @@ def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _OP
         messages[1:1 + dropped] = [
             {"role": "user", "content": f"[{dropped} earlier messages removed to fit context budget]"}
         ]
+    # After trimming, drop any orphaned "tool" messages that appear right after
+    # the budget placeholder (index 1).  Their parent assistant message was
+    # trimmed, so sending them would violate the tool-result protocol and cause
+    # a 400 error from providers that expect each tool result to follow the
+    # assistant turn that requested it.
+    while len(messages) > 2 and messages[2].get("role") == "tool":
+        messages.pop(2)
 
 
 def _to_openrouter_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -225,11 +478,12 @@ def _run_openrouter_investigation(
     if requests is None:
         raise RuntimeError("requests is required for OpenRouter calls.")
 
+    target_state, target_zip = _infer_state_and_zip(query)
     url = urljoin(settings.openrouter_base_url.rstrip("/") + "/", "chat/completions")
     tool_defs = get_tool_definitions()
     openrouter_tools = _to_openrouter_tools(tool_defs)
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": load_system_prompt()},
+        {"role": "system", "content": load_system_prompt(target_state=target_state, target_zip=target_zip, max_turns=max_turns)},
         {"role": "user", "content": query},
     ]
     tool_calls: List[Dict[str, Any]] = []
@@ -260,7 +514,8 @@ def _run_openrouter_investigation(
         )
         if not resp.ok:
             logger.warning("OpenRouter request failed: %s %s", resp.status_code, resp.text)
-            raise RuntimeError(f"OpenRouter request failed: {resp.status_code}")
+            error_body = resp.text[:500] if resp.text else "no response body"
+            raise RuntimeError(f"OpenRouter request failed: {resp.status_code} — {error_body}")
 
         completion = resp.json()
         choice = completion.get("choices", [{}])[0]
@@ -282,6 +537,16 @@ def _run_openrouter_investigation(
         messages.append(assistant_history_entry)
 
         if not tool_calls_block:
+            # Check if the LLM stopped early with providers left to investigate
+            nudge = _continuation_nudge(
+                tool_calls, turn, max_turns,
+                target_state=target_state, target_zip=target_zip or "",
+                assistant_text=assistant_text,
+            )
+            if nudge:
+                raw_turns.append(turn_summary)
+                messages.append({"role": "user", "content": nudge})
+                continue
             raw_turns.append(turn_summary)
             break
 
@@ -312,7 +577,6 @@ def _run_openrouter_investigation(
                     "content": json.dumps(_compact_tool_result(result)),
                 }
             )
-            _enforce_context_budget(messages)
 
         raw_turns.append(turn_summary)
 
@@ -322,13 +586,14 @@ def _run_openrouter_investigation(
         if finish_reason == "stop" and not any(tc.get("function") for tc in tool_calls_block):
             break
 
+    metrics = _extract_metrics(tool_calls)
     return {
         "query": query,
         "mode": "agent",
         "status": "complete",
         "turns": len(raw_turns),
-        "provider_count": 0,
-        "flagged": [],
+        "provider_count": metrics["provider_count"],
+        "flagged": metrics["flagged"],
         "narration": narration.to_markdown(),
         "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
         "tool_calls": tool_calls,
@@ -346,12 +611,12 @@ def _run_openrouter_investigation_stream(
     if requests is None:
         raise RuntimeError("requests is required for OpenRouter calls.")
 
-    state, zip_code = _infer_state_and_zip(query)
+    target_state, target_zip = _infer_state_and_zip(query)
     yield {
         "event": "start",
         "query": query,
-        "state": state,
-        "zip": zip_code,
+        "state": target_state,
+        "zip": target_zip,
         "provider": "openrouter",
         "max_turns": max_turns,
     }
@@ -360,7 +625,7 @@ def _run_openrouter_investigation_stream(
     tool_defs = get_tool_definitions()
     openrouter_tools = _to_openrouter_tools(tool_defs)
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": load_system_prompt()},
+        {"role": "system", "content": load_system_prompt(target_state=target_state, target_zip=target_zip, max_turns=max_turns)},
         {"role": "user", "content": query},
     ]
     tool_calls: List[Dict[str, Any]] = []
@@ -394,7 +659,8 @@ def _run_openrouter_investigation_stream(
             )
             if not resp.ok:
                 logger.warning("OpenRouter request failed: %s %s", resp.status_code, resp.text)
-                raise RuntimeError(f"OpenRouter request failed: {resp.status_code}")
+                error_body = resp.text[:500] if resp.text else "no response body"
+                raise RuntimeError(f"OpenRouter request failed: {resp.status_code} — {error_body}")
 
             completion = resp.json()
             choice = completion.get("choices", [{}])[0]
@@ -422,6 +688,16 @@ def _run_openrouter_investigation_stream(
             messages.append(assistant_history_entry)
 
             if not tool_calls_block:
+                nudge = _continuation_nudge(
+                    tool_calls, turn, max_turns,
+                    target_state=target_state, target_zip=target_zip or "",
+                    assistant_text=assistant_text,
+                )
+                if nudge:
+                    raw_turns.append(turn_summary)
+                    messages.append({"role": "user", "content": nudge})
+                    yield {"event": "nudge", "turn": turn, "message": nudge}
+                    continue
                 raw_turns.append(turn_summary)
                 break
 
@@ -475,7 +751,6 @@ def _run_openrouter_investigation_stream(
                         "content": json.dumps(_compact_tool_result(result)),
                     }
                 )
-                _enforce_context_budget(messages)
 
                 yield {
                     "event": "tool_payload",
@@ -494,13 +769,14 @@ def _run_openrouter_investigation_stream(
             if finish_reason == "stop" and not any(tc.get("function") for tc in tool_calls_block):
                 break
 
+        metrics = _extract_metrics(tool_calls)
         result_payload = {
             "query": query,
             "mode": "agent",
             "status": "complete",
             "turns": len(raw_turns),
-            "provider_count": 0,
-            "flagged": [],
+            "provider_count": metrics["provider_count"],
+            "flagged": metrics["flagged"],
             "narration": narration.to_markdown(),
             "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
             "tool_calls": tool_calls,
@@ -517,13 +793,14 @@ def _run_openrouter_investigation_stream(
             "error": _sanitize_error(exc),
             "query": query,
         }
+        metrics = _extract_metrics(tool_calls)
         result_payload = {
             "query": query,
             "mode": "agent",
             "status": "error",
             "turns": len(raw_turns),
-            "provider_count": 0,
-            "flagged": [],
+            "provider_count": metrics["provider_count"],
+            "flagged": metrics["flagged"],
             "narration": narration.to_markdown(),
             "assistant_text": "\n".join(assistant_text) or "Investigation failed.",
             "tool_calls": tool_calls,
@@ -539,7 +816,7 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
     state, zip_code = _infer_state_and_zip(query)
 
     narration = InvestigationNarration(query=query)
-    providers = search_childcare_providers(state=state, zip=zip_code)
+    providers = search_childcare_providers(state=state, zip=zip_code, offline=True)
 
     if not providers:
         narration.add_narration("No providers were returned for the requested area with local fallback data.")
@@ -573,14 +850,14 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
         property_data = get_property_data(addr, state=state, offline=True)
         sqft = float(property_data.get("building_sqft", 0) or 0)
         calc = calculate_max_capacity(sqft, state=state, usable_ratio=0.65)
-        places = get_places_info(addr)
+        places = get_places_info(addr, name=provider.get("name", ""))
         licensing = check_licensing_status(provider.get("name", ""), state=state, address=addr)
         reg = check_business_registration(provider.get("name", ""), state=state, search_type="business")
 
         turn_tools = []
         turn_tools.append({"tool": "get_property_data", "input": {"address": addr, "state": state}, "result": property_data})
         turn_tools.append({"tool": "calculate_max_capacity", "input": {"building_sqft": sqft, "state": state}, "result": calc})
-        turn_tools.append({"tool": "get_places_info", "input": {"address": addr}, "result": places})
+        turn_tools.append({"tool": "get_places_info", "input": {"address": addr, "name": provider.get("name", "")}, "result": places})
         turn_tools.append({"tool": "check_licensing_status", "input": {"provider_name": provider.get("name", ""), "state": state, "address": addr}, "result": licensing})
         turn_tools.append({"tool": "check_business_registration", "input": {"name": provider.get("name", ""), "state": state, "search_type": "business"}, "result": reg})
         tool_calls.extend(turn_tools)
@@ -645,7 +922,7 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
     yield {"event": "start", "query": query, "state": state, "zip": zip_code}
 
     narration = InvestigationNarration(query=query)
-    providers = search_childcare_providers(state=state, zip=zip_code)
+    providers = search_childcare_providers(state=state, zip=zip_code, offline=True)
 
     yield {"event": "providers_loaded", "count": len(providers)}
 
@@ -690,7 +967,7 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
         yield {"event": "tool_result", "turn": idx, "tool": "calculate_max_capacity", "max_legal": calc["max_legal_capacity"]}
 
         try:
-            places = get_places_info(addr)
+            places = get_places_info(addr, name=name)
         except Exception as exc:
             logger.warning("get_places_info failed for %s: %s", addr, exc)
             places = {"status": "error", "error": str(type(exc).__name__)}
@@ -719,7 +996,7 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
         turn_tools = [
             {"tool": "get_property_data", "input": {"address": addr, "state": state}, "result": property_data},
             {"tool": "calculate_max_capacity", "input": {"building_sqft": sqft, "state": state}, "result": calc},
-            {"tool": "get_places_info", "input": {"address": addr}, "result": places},
+            {"tool": "get_places_info", "input": {"address": addr, "name": name}, "result": places},
             {"tool": "check_licensing_status", "input": {"provider_name": name, "state": state, "address": addr}, "result": licensing},
             {"tool": "check_business_registration", "input": {"name": name, "state": state, "search_type": "business"}, "result": reg},
         ]
@@ -833,6 +1110,7 @@ def run_investigation(
     elif settings.llm_provider == "anthropic":
         if not settings.anthropic_api_key or anthropic is None:
             raise RuntimeError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic.")
+        target_state_anthropic, target_zip_anthropic = _infer_state_and_zip(query)
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         narration = InvestigationNarration(query=query)
         messages = [{"role": "user", "content": query}]
@@ -847,7 +1125,7 @@ def run_investigation(
                 model=model or settings.model,
                 max_tokens=settings.max_tokens,
                 thinking={"type": "enabled", "budget_tokens": settings.thinking_budget_tokens},
-                system=load_system_prompt(),
+                system=load_system_prompt(target_state=target_state_anthropic, target_zip=target_zip_anthropic, max_turns=max_turns),
                 tools=tool_defs,
                 messages=messages,
             )
@@ -890,13 +1168,14 @@ def run_investigation(
             if getattr(response, "stop_reason", None) == "end_turn":
                 break
 
+        metrics = _extract_metrics(tool_calls)
         result = {
             "query": query,
             "mode": "agent",
             "status": "complete",
             "turns": len(raw_turns),
-            "provider_count": 0,
-            "flagged": [],
+            "provider_count": metrics["provider_count"],
+            "flagged": metrics["flagged"],
             "narration": narration.to_markdown(),
             "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
             "tool_calls": tool_calls,

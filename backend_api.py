@@ -32,8 +32,9 @@ app.add_middleware(
 
 # Simple in-memory rate limiter
 _rate_limit_store: Dict[str, List[float]] = defaultdict(list)
-_RATE_LIMIT_MAX = 10
-_RATE_LIMIT_WINDOW = 60
+_settings = load_settings()
+_RATE_LIMIT_MAX = _settings.rate_limit_max
+_RATE_LIMIT_WINDOW = _settings.rate_limit_window
 
 
 def _is_rate_limited(client_ip: str) -> bool:
@@ -55,7 +56,7 @@ app.mount(
 
 class InvestigateRequest(BaseModel):
     query: str = Field(..., max_length=2000)
-    max_turns: int = Field(default=8, ge=1, le=20)
+    max_turns: int = Field(default=25, ge=1, le=50)
     offline: bool = False
 
     @field_validator("query")

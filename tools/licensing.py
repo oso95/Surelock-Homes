@@ -7,13 +7,33 @@ from pathlib import Path
 from typing import Any, Dict
 
 from config import DATA_DIR
-from tools.providers import _load_il_live_records
+from tools.providers import _load_il_live_records, _load_stale_cache, _query_parentaware_by_name
 
 logger = logging.getLogger(__name__)
 
 
 def _normalize(value: str | None) -> str:
     return str(value or "").strip().lower()
+
+
+def _normalize_addr(addr: str) -> str:
+    """Normalize address for matching: strip city/state/zip, standardize abbreviations."""
+    a = str(addr).upper().strip()
+    a = a.split(",")[0].strip()
+    for full, abbr in [
+        ("STREET", "ST"), ("AVENUE", "AVE"), ("ROAD", "RD"), ("DRIVE", "DR"),
+        ("BOULEVARD", "BLVD"), ("PLACE", "PL"), ("COURT", "CT"), ("LANE", "LN"),
+        ("WEST", "W"), ("EAST", "E"), ("NORTH", "N"), ("SOUTH", "S"),
+    ]:
+        a = re.sub(r"\b" + full + r"\b", abbr, a)
+    return re.sub(r"\s+", " ", a).strip()
+
+
+def _addr_matches(addr_a: str | None, addr_b: str | None) -> bool:
+    """Check if two addresses refer to the same location despite format differences."""
+    if not addr_a or not addr_b:
+        return True  # No address to compare — don't filter out
+    return _normalize_addr(addr_a) == _normalize_addr(addr_b)
 
 
 def _safe_int(value: object, default: int = 0) -> int:
@@ -34,25 +54,21 @@ def _read_csv(path: Path):
 
 def _find_live_il_matches(name: str, address: str | None) -> list[Dict[str, Any]]:
     needle = _normalize(name)
-    address_norm = _normalize(address)
-    address_tokens = re.split(r"\W+", address_norm) if address_norm else []
     matches: list[Dict[str, Any]] = []
     try:
         records = _load_il_live_records()
     except Exception:
-        logger.warning("Failed to load IL live records for licensing lookup", exc_info=True)
+        logger.warning("Live IL fetch failed for licensing lookup, trying stale cache", exc_info=True)
+        records = _load_stale_cache("IL")
+    if not records:
         return []
 
     for row in records:
         provider = _normalize(row.get("name"))
         if needle not in provider:
             continue
-        row_address = _normalize(row.get("address"))
-        if address_norm and row_address and address_norm not in row_address and row_address not in address_norm:
+        if address and not _addr_matches(address, row.get("address")):
             continue
-        if address_tokens and len(address_tokens) >= 2:
-            if not all(token in row_address for token in address_tokens[:2]):
-                continue
         matches.append(
             {
                 "status": "found",
@@ -70,6 +86,53 @@ def _find_live_il_matches(name: str, address: str | None) -> list[Dict[str, Any]
     return matches
 
 
+def _pa_address_line1(pa: Dict[str, Any]) -> str:
+    """Extract the street address (line1) from a ParentAware address dict."""
+    addr = pa.get("address")
+    if isinstance(addr, dict):
+        return (addr.get("line1") or "").strip()
+    if isinstance(addr, str):
+        return addr.strip()
+    return ""
+
+
+def _find_live_mn_matches(name: str, address: str | None) -> list[Dict[str, Any]]:
+    """Search ParentAware API for MN provider licensing info."""
+    needle = _normalize(name)
+    matches: list[Dict[str, Any]] = []
+    try:
+        results = _query_parentaware_by_name(name)
+    except Exception:
+        logger.warning("ParentAware lookup failed for MN licensing", exc_info=True)
+        return []
+
+    for pa in results:
+        pa_name = _normalize(pa.get("name", ""))
+        if needle not in pa_name and pa_name not in needle:
+            continue
+        if address:
+            pa_addr = _pa_address_line1(pa)
+            if pa_addr and not _addr_matches(address, pa_addr):
+                continue
+        matches.append(
+            {
+                "status": "found",
+                "provider_name": pa.get("name", ""),
+                "state": "MN",
+                "license_type": pa.get("licenseType", ""),
+                "license_status": pa.get("licenseStatus", ""),
+                "issue_date": "",
+                "expiration_date": "",
+                "capacity": _safe_int(pa.get("licensedCapacity")),
+                "age_range": pa.get("ageRange", ""),
+                "accepts_ccap": pa.get("acceptsCCAP"),
+                "violation_history": "",
+                "inspection_notes": "ParentAware live lookup",
+            }
+        )
+    return matches
+
+
 def check_licensing_status(
     provider_name: str,
     state: str,
@@ -81,13 +144,11 @@ def check_licensing_status(
     state_key = (state or "").upper()
     path = DATA_DIR / ("mn_licensing.csv" if state_key == "MN" else "il_licensing.csv")
     target = _normalize(provider_name)
-    address_norm = _normalize(address)
 
     for row in _read_csv(path):
         provider_row = _normalize(row.get("provider_name"))
-        row_address = _normalize(row.get("address"))
         if target in provider_row:
-            if address and address_norm and row_address and row_address not in address_norm and address_norm not in row_address:
+            if address and not _addr_matches(address, row.get("address")):
                 continue
             return {
                 "status": "found",
@@ -100,6 +161,27 @@ def check_licensing_status(
                 "capacity": int(float(row.get("capacity", 0) or 0)),
                 "violation_history": row.get("violation_history", ""),
                 "inspection_notes": row.get("inspection_notes", ""),
+            }
+
+    if state_key == "MN":
+        matches = _find_live_mn_matches(provider_name, address)
+        if matches:
+            if len(matches) == 1:
+                return matches[0]
+            return {
+                "status": "found",
+                "provider_name": provider_name,
+                "state": "MN",
+                "license_type": matches[0].get("license_type", ""),
+                "license_status": matches[0].get("license_status", ""),
+                "issue_date": matches[0].get("issue_date", ""),
+                "expiration_date": matches[0].get("expiration_date", ""),
+                "capacity": matches[0].get("capacity", 0),
+                "age_range": matches[0].get("age_range", ""),
+                "accepts_ccap": matches[0].get("accepts_ccap"),
+                "violation_history": "",
+                "inspection_notes": "Multiple ParentAware records found; returning first match",
+                "results": matches,
             }
 
     if state_key == "IL":

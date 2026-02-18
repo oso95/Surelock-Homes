@@ -35,8 +35,8 @@
             <label class="range-control" for="turnsRange">
               <span class="range-control__label">Max turns</span>
               <div class="range-control__row">
-                <input id="turnsRange" type="range" min="1" max="20" value="5" class="range-control__input" />
-                <span id="turnsValue" class="range-control__value">5</span>
+                <input id="turnsRange" type="range" min="1" max="50" value="12" class="range-control__input" />
+                <span id="turnsValue" class="range-control__value">12</span>
               </div>
             </label>
           </div>
@@ -114,65 +114,77 @@
             <span id="flagsAlertText" class="flags-alert__text"></span>
           </section>
 
-          <!-- AI Analysis — hero section -->
-          <section class="section section--analysis" aria-label="AI analysis">
-            <div class="section__header">
-              <h2 class="section__title">AI Analysis</h2>
-              <span id="narrativeWordCount" class="word-count"></span>
-            </div>
-            <div id="narrativeContent" class="prose">
-              <p class="placeholder">No analysis available.</p>
-            </div>
-          </section>
+          <!-- Tab Bar -->
+          <div class="tab-bar" role="tablist" aria-label="Results view">
+            <button id="tabBtnReport" class="tab-btn tab-btn--active" type="button" role="tab" aria-selected="true" aria-controls="tabReport">Report</button>
+            <button id="tabBtnInvestigation" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tabInvestigation">Investigation</button>
+          </div>
 
-          <!-- AI Thinking Process -->
-          <section class="section section--thinking" aria-label="AI thinking process">
-            <div class="section__header">
-              <h2 class="section__title">Thinking Process</h2>
-              <span id="thinkingBadge" class="badge badge--neutral">0 steps</span>
-            </div>
-            <div id="thinkingList" class="thinking-list">
-              <p class="placeholder">No thinking trace.</p>
-            </div>
-          </section>
-
-          <!-- Flagged Providers -->
-          <section class="section section--flags" aria-label="Flagged providers">
-            <div class="section__header">
-              <h2 class="section__title">Flagged Providers</h2>
-              <span id="flagBadge" class="badge badge--neutral">No flags</span>
-            </div>
-            <div id="flagsList" class="card-grid">
-              <p class="placeholder">No flags were raised.</p>
-            </div>
-          </section>
-
-          <!-- Execution Timeline -->
-          <section class="section section--timeline" aria-label="Execution timeline">
-            <h2 class="section__title">Execution Timeline</h2>
-            <div id="timelineList" class="timeline"></div>
-          </section>
-
-          <!-- Tool Activity -->
-          <section class="section section--tools" aria-label="Tool activity">
-            <div class="section__header">
-              <h2 class="section__title">Tool Calls</h2>
-              <span id="toolCountBadge" class="badge badge--neutral">0</span>
-            </div>
-            <div id="toolCallList" class="card-grid">
-              <p class="placeholder">No tool calls yet.</p>
-            </div>
-          </section>
-
-          <!-- Raw Evidence -->
-          <section class="section section--raw" aria-label="Raw evidence">
-            <details>
-              <summary>Raw JSON Payload</summary>
-              <div class="raw-wrap">
-                <pre id="jsonPayload">{}</pre>
+          <!-- Tab: Report -->
+          <div id="tabReport" class="tab-panel" role="tabpanel">
+            <!-- AI Analysis — hero section -->
+            <section class="section section--analysis" aria-label="AI analysis">
+              <div class="section__header">
+                <h2 class="section__title">AI Analysis</h2>
+                <span id="narrativeWordCount" class="word-count"></span>
               </div>
-            </details>
-          </section>
+              <div id="narrativeContent" class="prose">
+                <p class="placeholder">No analysis available.</p>
+              </div>
+            </section>
+
+            <!-- Flagged Providers -->
+            <section class="section section--flags" aria-label="Flagged providers">
+              <div class="section__header">
+                <h2 class="section__title">Flagged Providers</h2>
+                <span id="flagBadge" class="badge badge--neutral">No flags</span>
+              </div>
+              <div id="flagsList" class="card-grid">
+                <p class="placeholder">No flags were raised.</p>
+              </div>
+            </section>
+          </div>
+
+          <!-- Tab: Investigation -->
+          <div id="tabInvestigation" class="tab-panel" role="tabpanel" hidden>
+            <!-- AI Thinking Process -->
+            <section class="section section--thinking" aria-label="AI thinking process">
+              <div class="section__header">
+                <h2 class="section__title">Thinking Process</h2>
+                <span id="thinkingBadge" class="badge badge--neutral">0 steps</span>
+              </div>
+              <div id="thinkingList" class="thinking-list">
+                <p class="placeholder">No thinking trace.</p>
+              </div>
+            </section>
+
+            <!-- Execution Timeline -->
+            <section class="section section--timeline" aria-label="Execution timeline">
+              <h2 class="section__title">Execution Timeline</h2>
+              <div id="timelineList" class="timeline"></div>
+            </section>
+
+            <!-- Tool Activity -->
+            <section class="section section--tools" aria-label="Tool activity">
+              <div class="section__header">
+                <h2 class="section__title">Tool Calls</h2>
+                <span id="toolCountBadge" class="badge badge--neutral">0</span>
+              </div>
+              <div id="toolCallList" class="card-grid">
+                <p class="placeholder">No tool calls yet.</p>
+              </div>
+            </section>
+
+            <!-- Raw Evidence -->
+            <section class="section section--raw" aria-label="Raw evidence">
+              <details>
+                <summary>Raw JSON Payload</summary>
+                <div class="raw-wrap">
+                  <pre id="jsonPayload">{}</pre>
+                </div>
+              </details>
+            </section>
+          </div>
         </div>
       </div>
     </div>

@@ -27,7 +27,7 @@ def geocode_address(address: str) -> Dict[str, Any]:
             resp = requests.get(
                 "https://maps.googleapis.com/maps/api/geocode/json",
                 params=params,
-                timeout=5,
+                timeout=settings.google_api_timeout_seconds,
             )
             resp.raise_for_status()
             payload = resp.json()

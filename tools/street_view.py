@@ -67,7 +67,7 @@ def get_street_view(
             meta = requests.get(
                 "https://maps.googleapis.com/maps/api/streetview/metadata",
                 params={**params, "return_error_codes": True},
-                timeout=5,
+                timeout=settings.google_api_timeout_seconds,
             )
             meta_payload = meta.json()
             meta_status = str(meta_payload.get("status", "")).upper()
@@ -80,7 +80,7 @@ def get_street_view(
             img_resp = requests.get(
                 "https://maps.googleapis.com/maps/api/streetview",
                 params=params,
-                timeout=5,
+                timeout=settings.google_api_timeout_seconds,
             )
             img_resp.raise_for_status()
             image_base64 = base64.b64encode(img_resp.content).decode("ascii")

@@ -36,6 +36,11 @@ const timelineList = document.getElementById("timelineList");
 const historyList = document.getElementById("historyList");
 const clearHistoryBtn = document.getElementById("clearHistoryBtn");
 
+const tabBtnReport = document.getElementById("tabBtnReport");
+const tabBtnInvestigation = document.getElementById("tabBtnInvestigation");
+const tabReport = document.getElementById("tabReport");
+const tabInvestigation = document.getElementById("tabInvestigation");
+
 let lastPayload = null;
 let activeHistoryId = null;
 
@@ -60,6 +65,28 @@ function showResults() {
   loadingState.hidden = true;
   resultsContainer.hidden = false;
 }
+
+/* ==========================================================================
+   Tab Switching
+   ========================================================================== */
+
+const TAB_PREFERENCE_KEY = "surelock_active_tab";
+
+function switchTab(tabName) {
+  const isReport = tabName === "report";
+  tabReport.hidden = !isReport;
+  tabInvestigation.hidden = isReport;
+
+  tabBtnReport.classList.toggle("tab-btn--active", isReport);
+  tabBtnInvestigation.classList.toggle("tab-btn--active", !isReport);
+  tabBtnReport.setAttribute("aria-selected", String(isReport));
+  tabBtnInvestigation.setAttribute("aria-selected", String(!isReport));
+
+  localStorage.setItem(TAB_PREFERENCE_KEY, tabName);
+}
+
+tabBtnReport.addEventListener("click", () => switchTab("report"));
+tabBtnInvestigation.addEventListener("click", () => switchTab("investigation"));
 
 /* ==========================================================================
    Utilities
@@ -272,24 +299,16 @@ function renderMetrics(payload) {
 }
 
 function renderNarrative(payload) {
-  // Use narration (structured markdown) as the primary source.
-  // Only fall back to assistant_text if narration is empty or trivially short.
-  const narration = payload.narration || "";
+  // Prefer assistant_text — it's the LLM's full markdown output with proper
+  // formatting (headers, tables, emphasis).  Fall back to narration if needed.
   const assistantText = payload.assistant_text || "";
+  const narration = payload.narration || "";
 
   let content = "";
-  if (typeof narration === "string" && narration.trim().length > 0) {
-    content = narration;
-  } else if (assistantText.trim().length > 0) {
+  if (assistantText.trim().length > 0) {
     content = assistantText;
-  }
-
-  const assistantSectionMarker = "\n## Assistant Text";
-  if (assistantSectionMarker.length > 0) {
-    const markerIndex = content.indexOf(assistantSectionMarker);
-    if (markerIndex >= 0) {
-      content = content.slice(0, markerIndex).trim();
-    }
+  } else if (narration.trim().length > 0) {
+    content = narration;
   }
 
   if (!content.trim()) {
@@ -304,21 +323,56 @@ function renderNarrative(payload) {
 }
 
 function renderThinking(payload) {
-  const thinking = Array.isArray(payload.thinking) ? payload.thinking : [];
-  thinkingBadge.textContent = `${thinking.length} step${thinking.length !== 1 ? "s" : ""}`;
-  thinkingBadge.className = "badge " + (thinking.length > 0 ? "badge--green" : "badge--neutral");
+  // Build thinking from raw_turns (per-turn assistant reasoning) when the
+  // thinking array only contains tool markers (OpenRouter mode).  For
+  // Anthropic mode the thinking array has actual extended-thinking content.
+  const rawThinking = Array.isArray(payload.thinking) ? payload.thinking : [];
+  const hasRealThinking = rawThinking.length > 0 && rawThinking.some(t => !String(t).startsWith("tool:"));
 
-  if (thinking.length === 0) {
+  let items = [];
+  if (hasRealThinking) {
+    items = rawThinking.filter(t => !String(t).startsWith("tool:"));
+  } else if (Array.isArray(payload.raw_turns)) {
+    // Use per-turn assistant narration as the thinking trace
+    payload.raw_turns.forEach((turn) => {
+      const text = (turn.assistant || "").trim();
+      if (!text) return;
+      const tools = Array.isArray(turn.tool_results)
+        ? turn.tool_results.map(tr => tr.tool).join(", ")
+        : Array.isArray(turn.tools)
+          ? turn.tools.map(t => t.tool || t).join(", ")
+          : "";
+      items.push({ turn: turn.turn, text, tools });
+    });
+  }
+
+  const count = items.length;
+  thinkingBadge.textContent = `${count} step${count !== 1 ? "s" : ""}`;
+  thinkingBadge.className = "badge " + (count > 0 ? "badge--green" : "badge--neutral");
+
+  if (count === 0) {
     thinkingList.innerHTML = '<p class="placeholder">No thinking trace available.</p>';
     return;
   }
 
   thinkingList.innerHTML = "";
-  thinking.forEach((item) => {
-    const div = document.createElement("div");
-    div.className = "thinking-item";
-    div.textContent = String(item || "");
-    thinkingList.appendChild(div);
+  items.forEach((item) => {
+    if (typeof item === "string") {
+      // Anthropic extended-thinking mode
+      const div = document.createElement("div");
+      div.className = "thinking-item";
+      div.textContent = item;
+      thinkingList.appendChild(div);
+    } else {
+      // Per-turn reasoning (OpenRouter mode)
+      const details = document.createElement("details");
+      details.className = "thinking-turn";
+      const toolsSuffix = item.tools ? ` — ${item.tools}` : "";
+      details.innerHTML =
+        `<summary class="thinking-turn__header">Turn ${item.turn}${toolsSuffix}</summary>` +
+        `<div class="thinking-turn__body">${renderMarkdown(item.text)}</div>`;
+      thinkingList.appendChild(details);
+    }
   });
 }
 
@@ -385,29 +439,32 @@ function renderToolCalls(toolCalls) {
 
   toolCallList.innerHTML = "";
   toolCalls.forEach((entry, index) => {
-    const card = document.createElement("article");
-    card.className = "tool-card";
+    const wrapper = document.createElement("details");
+    wrapper.className = "tool-card";
+    if (index < 3) wrapper.open = true;
+
     const status = entry.status || "ok";
     const badgeClass = status === "ok" ? "badge--green" : "badge--amber";
     const args = formatCode(entry.arguments || entry.input || {});
     const result = formatCode(entry.result);
-    const openAttr = index < 3 ? " open" : "";
 
-    card.innerHTML = `
-      <div class="tool-card__header">
+    wrapper.innerHTML = `
+      <summary class="tool-card__header">
         <h4>${escapeHtml(entry.tool || "tool")}</h4>
         <span class="badge ${badgeClass}">${escapeHtml(status)}</span>
+      </summary>
+      <div class="tool-card__body">
+        <details>
+          <summary>Input</summary>
+          <pre class="code-block">${escapeHtml(args)}</pre>
+        </details>
+        <details>
+          <summary>Result</summary>
+          <pre class="code-block">${escapeHtml(result)}</pre>
+        </details>
       </div>
-      <details${openAttr}>
-        <summary>Input</summary>
-        <pre class="code-block">${escapeHtml(args)}</pre>
-      </details>
-      <details${openAttr}>
-        <summary>Result</summary>
-        <pre class="code-block">${escapeHtml(result)}</pre>
-      </details>
     `;
-    toolCallList.appendChild(card);
+    toolCallList.appendChild(wrapper);
   });
 }
 
@@ -801,8 +858,68 @@ function loadHistory() {
   }
 }
 
+function _compactPayloadForStorage(payload) {
+  const compact = Object.assign({}, payload);
+  // Strip heavy tool call results — keep tool name/status/arguments only
+  if (Array.isArray(compact.tool_calls)) {
+    compact.tool_calls = compact.tool_calls.map(tc => ({
+      tool: tc.tool,
+      arguments: tc.arguments,
+      status: tc.status,
+    }));
+  }
+  // Strip verbose raw_turns results
+  if (Array.isArray(compact.raw_turns)) {
+    compact.raw_turns = compact.raw_turns.map(turn => ({
+      turn: turn.turn,
+      assistant: typeof turn.assistant === "string" ? turn.assistant.slice(0, 500) : "",
+      provider: turn.provider,
+      flagged: turn.flagged,
+      tool_results: Array.isArray(turn.tool_results)
+        ? turn.tool_results.map(tr => ({ tool: tr.tool, status: tr.status }))
+        : undefined,
+      tools: Array.isArray(turn.tools)
+        ? turn.tools.map(t => ({ tool: t.tool }))
+        : undefined,
+    }));
+  }
+
+  // Keep flagged array but strip nested property_data/places/business_registration detail
+  if (Array.isArray(compact.flagged)) {
+    compact.flagged = compact.flagged.map(f => ({
+      provider: f.provider,
+      licensed_capacity: f.licensed_capacity,
+      max_legal_capacity: f.max_legal_capacity,
+      excess_capacity: f.excess_capacity,
+      building_sqft: f.building_sqft,
+      flags: f.flags,
+    }));
+  }
+  return compact;
+}
+
 function saveHistory(entries) {
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+  const json = JSON.stringify(entries);
+  try {
+    localStorage.setItem(HISTORY_KEY, json);
+  } catch (e) {
+    // Quota exceeded — evict oldest entries and retry
+    while (entries.length > 1) {
+      entries.pop();
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+        return;
+      } catch (_) { /* keep evicting */ }
+    }
+    // Last resort: clear and store only the newest entry
+    try {
+      localStorage.removeItem(HISTORY_KEY);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+    } catch (_) {
+      // Storage completely full — silently give up on history persistence
+      console.warn("localStorage quota exceeded; history not saved.");
+    }
+  }
 }
 
 function addToHistory(query, payload) {
@@ -818,7 +935,7 @@ function addToHistory(query, payload) {
     flags,
     providers,
     mode,
-    payload,
+    payload: _compactPayloadForStorage(payload),
   };
 
   entries.unshift(entry);
@@ -915,3 +1032,7 @@ turnsValue.textContent = turnsRange.value;
 checkConnection();
 renderHistory();
 showEmpty();
+
+// Restore active tab preference
+const savedTab = localStorage.getItem(TAB_PREFERENCE_KEY);
+if (savedTab === "investigation") switchTab("investigation");

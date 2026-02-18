@@ -19,16 +19,23 @@ def _is_childcare_candidate(candidate: Dict[str, Any]) -> bool:
     return any(token in haystack for token in ("daycare", "day care", "child", "preschool", "school", "nursery"))
 
 
-def _find_place_candidates(address: str, api_key: str, timeout: int) -> List[Dict[str, Any]]:
+def _find_place_candidates(address: str, api_key: str, _timeout: int, *, name: str = "") -> List[Dict[str, Any]]:
     addr = address.strip()
-    query_plan = [
+    query_plan: List[tuple] = []
+    # When the business name is known, search by name first — this is the most
+    # reliable way to find the Google listing (matches how a human would search).
+    if name:
+        clean_name = name.strip()
+        query_plan.append((f"{clean_name} {addr}", False))
+        query_plan.append((clean_name, False))
+    query_plan.extend([
         (f"childcare {addr}", True),
         (f"child care {addr}", True),
         (f"daycare {addr}", True),
         (f"preschool {addr}", True),
         (f"kids center {addr}", True),
         (addr, False),
-    ]
+    ])
     for query, require_childcare in query_plan:
         query = query.strip()
         if not query:
@@ -36,7 +43,7 @@ def _find_place_candidates(address: str, api_key: str, timeout: int) -> List[Dic
         find_resp = requests.get(
             "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
             params={"input": query, "inputtype": "textquery", "fields": "place_id,name,types", "key": api_key},
-            timeout=timeout,
+            timeout=_timeout,
         )
         find_resp.raise_for_status()
         payload = find_resp.json()
@@ -100,7 +107,7 @@ def _build_no_place_result(address: str, note: str) -> Dict[str, Any]:
     }
 
 
-def get_places_info(address: str) -> Dict[str, Any]:
+def get_places_info(address: str, name: str = "") -> Dict[str, Any]:
     if not address:
         return {"status": "error", "error": "address is required"}
 
@@ -120,7 +127,8 @@ def get_places_info(address: str) -> Dict[str, Any]:
         }
 
     try:
-        candidates = _find_place_candidates(address, settings.google_maps_api_key, timeout=5)
+        _api_timeout = settings.google_api_timeout_seconds
+        candidates = _find_place_candidates(address, settings.google_maps_api_key, _timeout=_api_timeout, name=name)
         if not candidates:
             return _build_no_place_result(address, "No Google Places childcare record found; address was geocoded.")
 
@@ -132,7 +140,7 @@ def get_places_info(address: str) -> Dict[str, Any]:
                 "fields": "name,business_status,rating,user_ratings_total,types,reviews,geometry,formatted_address",
                 "key": settings.google_maps_api_key,
             },
-            timeout=5,
+            timeout=_api_timeout,
         )
         details.raise_for_status()
         detail_payload = details.json()
@@ -147,7 +155,7 @@ def get_places_info(address: str) -> Dict[str, Any]:
         expected_house = _house_number(address)
 
         if expected_house and formatted_address:
-            has_house_match = bool(re.search(rf"\\b{re.escape(expected_house)}\\b", formatted_address))
+            has_house_match = _has_matching_house(formatted_address, expected_house)
             if not has_house_match:
                 return _build_no_place_result(address, "Place result matched no matching street number; using geocode fallback.")
 
