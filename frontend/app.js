@@ -29,6 +29,8 @@ const thinkingList = document.getElementById("thinkingList");
 const thinkingBadge = document.getElementById("thinkingBadge");
 const narrativeContent = document.getElementById("narrativeContent");
 const narrativeWordCount = document.getElementById("narrativeWordCount");
+const narrationList = document.getElementById("narrationList");
+const narrationBadge = document.getElementById("narrationBadge");
 const toolCallList = document.getElementById("toolCallList");
 const toolCountBadge = document.getElementById("toolCountBadge");
 const timelineList = document.getElementById("timelineList");
@@ -299,13 +301,16 @@ function renderMetrics(payload) {
 }
 
 function renderNarrative(payload) {
-  // Prefer assistant_text — it's the LLM's full markdown output with proper
-  // formatting (headers, tables, emphasis).  Fall back to narration if needed.
+  // Prefer report_text (the dedicated final report) over assistant_text
+  // (which includes investigation narration mixed in).
+  const reportText = payload.report_text || "";
   const assistantText = payload.assistant_text || "";
   const narration = payload.narration || "";
 
   let content = "";
-  if (assistantText.trim().length > 0) {
+  if (reportText.trim().length > 0) {
+    content = reportText;
+  } else if (assistantText.trim().length > 0) {
     content = assistantText;
   } else if (narration.trim().length > 0) {
     content = narration;
@@ -320,6 +325,43 @@ function renderNarrative(payload) {
   narrativeContent.innerHTML = renderMarkdown(content);
   const wordCount = content.split(/\s+/).filter(Boolean).length;
   narrativeWordCount.textContent = `${wordCount} words`;
+}
+
+function renderInvestigationNarration(payload) {
+  const rawTurns = Array.isArray(payload.raw_turns) ? payload.raw_turns : [];
+
+  // Collect per-turn narration (exclude the final report turn which has no tool_results)
+  const turns = [];
+  rawTurns.forEach((turn) => {
+    const text = (turn.assistant || "").trim();
+    if (!text) return;
+    const tools = Array.isArray(turn.tool_results)
+      ? turn.tool_results.map(tr => tr.tool).join(", ")
+      : Array.isArray(turn.tools)
+        ? turn.tools.map(t => t.tool || t).join(", ")
+        : "";
+    turns.push({ turn: turn.turn, text, tools });
+  });
+
+  const count = turns.length;
+  narrationBadge.textContent = `${count} turn${count !== 1 ? "s" : ""}`;
+  narrationBadge.className = "badge " + (count > 0 ? "badge--blue" : "badge--neutral");
+
+  if (count === 0) {
+    narrationList.innerHTML = '<p class="placeholder">No investigation narration available.</p>';
+    return;
+  }
+
+  narrationList.innerHTML = "";
+  turns.forEach((item) => {
+    const section = document.createElement("div");
+    section.className = "narration-turn";
+    const toolsSuffix = item.tools ? ` — ${item.tools}` : "";
+    section.innerHTML =
+      `<div class="narration-turn__header">Turn ${item.turn}${toolsSuffix}</div>` +
+      `<div class="narration-turn__body prose">${renderMarkdown(item.text)}</div>`;
+    narrationList.appendChild(section);
+  });
 }
 
 function renderThinking(payload) {
@@ -577,6 +619,7 @@ function renderPayload(payload) {
   jsonPayload.textContent = formatCode(payload);
   renderMetrics(payload);
   renderNarrative(payload);
+  renderInvestigationNarration(payload);
   renderThinking(payload);
   renderFlags(payload.flagged);
   renderToolCalls(payload.tool_calls);

@@ -154,11 +154,12 @@ INVESTIGATION THOROUGHNESS — CRITICAL:
   - If there are many providers (50+), organize by license type, triage the low-risk ones quickly, and investigate the high-risk ones deeply
 
 REPORT TIMING — MANDATORY:
-  - Do NOT write the final investigation report until ALL Day Care Centers have been investigated with at least property data + capacity calc
-  - Writing the report too early wastes turns — once a long report is generated, there may not be enough turns left to investigate remaining providers
+  - Do NOT write the final investigation report during your investigation turns
+  - The report will be generated automatically in a separate step after your investigation is complete
+  - Use ALL your turns for investigating providers — pull property data, capacity calcs, licensing, places info, street view
   - Track progress explicitly: after each batch of investigations, state how many DCCs have been investigated vs how many remain
-  - The report should be the LAST thing generated, using the final turn(s)
-  - If you are unsure whether you have investigated all providers, keep investigating — it is always better to investigate one more provider than to write the report one turn early
+  - Narrate your findings as you go — note anomalies, patterns, and leads to follow
+  - If you are unsure whether you have investigated all providers, keep investigating — use every turn available
 </tools>
 
 <visual_analysis>

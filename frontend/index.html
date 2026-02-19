@@ -42,10 +42,28 @@
           </div>
 
           <div class="presets" aria-label="Prompt presets">
-            <button class="preset-btn" type="button" data-query="Investigate Minnesota providers in ZIP 55401">MN 55401</button>
-            <button class="preset-btn" type="button" data-query="Investigate Illinois providers in ZIP 60612">IL 60612</button>
-            <button class="preset-btn" type="button" data-query="Investigate Illinois providers in ZIP 60629 with capacity check">IL 60629</button>
+            <span class="presets__label">Cook County, IL</span>
+            <button class="preset-btn" type="button" data-query="Investigate Illinois providers in ZIP 60612">60612</button>
+            <button class="preset-btn" type="button" data-query="Investigate Illinois providers in ZIP 60629">60629</button>
+            <button class="preset-btn" type="button" data-query="Investigate Illinois providers in ZIP 60623">60623</button>
+            <button class="preset-btn" type="button" data-query="Investigate Illinois providers in ZIP 60608">60608</button>
+            <span class="presets__label">Hennepin County, MN</span>
+            <button class="preset-btn" type="button" data-query="Investigate Minnesota providers in ZIP 55401">55401</button>
+            <button class="preset-btn" type="button" data-query="Investigate Minnesota providers in ZIP 55407">55407</button>
+            <button class="preset-btn" type="button" data-query="Investigate Minnesota providers in ZIP 55429">55429</button>
+            <button class="preset-btn" type="button" data-query="Investigate Minnesota providers in ZIP 55443">55443</button>
           </div>
+          <section class="scope-note" aria-label="Data coverage">
+            <p class="scope-note__title">Data Coverage</p>
+            <p class="scope-note__line">
+              <span class="scope-note__label">Property GIS</span>
+              <span class="scope-note__value">Cook County, IL and Hennepin County, MN</span>
+            </p>
+            <p class="scope-note__line">
+              <span class="scope-note__label">Provider search</span>
+              <span class="scope-note__value">Statewide in Illinois and Minnesota</span>
+            </p>
+          </section>
 
           <div class="actions">
             <button id="runBtn" type="button" class="btn btn--primary">Run Investigation</button>
@@ -147,6 +165,17 @@
 
           <!-- Tab: Investigation -->
           <div id="tabInvestigation" class="tab-panel" role="tabpanel" hidden>
+            <!-- Per-turn Investigation Narration -->
+            <section class="section section--narration" aria-label="Investigation narration">
+              <div class="section__header">
+                <h2 class="section__title">Investigation Narration</h2>
+                <span id="narrationBadge" class="badge badge--neutral">0 turns</span>
+              </div>
+              <div id="narrationList" class="thinking-list">
+                <p class="placeholder">No investigation narration available.</p>
+              </div>
+            </section>
+
             <!-- AI Thinking Process -->
             <section class="section section--thinking" aria-label="AI thinking process">
               <div class="section__header">

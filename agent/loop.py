@@ -322,6 +322,34 @@ def _report_already_written(assistant_text: List[str]) -> bool:
     return marker_hits >= 3
 
 
+def _extract_inline_report(assistant_text: List[str]) -> str:
+    """Extract the report section from assistant text when the LLM wrote it inline.
+
+    Scans through the per-turn text blocks and returns everything from the first
+    block that contains a report header marker onward.
+    """
+    # Report-start markers — the LLM typically begins with one of these
+    _START_MARKERS = (
+        "SURELOCK HOMES",
+        "INVESTIGATION REPORT",
+        "# Surelock Homes",
+        "# INVESTIGATION REPORT",
+        "## 1. INVESTIGATION NARRATIVE",
+        "1. INVESTIGATION NARRATIVE",
+    )
+    report_blocks: List[str] = []
+    collecting = False
+    for block in assistant_text:
+        if not collecting:
+            upper = block.upper()
+            if any(m.upper() in upper for m in _START_MARKERS):
+                collecting = True
+                report_blocks.append(block)
+        else:
+            report_blocks.append(block)
+    return "\n".join(report_blocks)
+
+
 def _continuation_nudge(
     tool_calls: List[Dict[str, Any]],
     current_turn: int,
@@ -361,24 +389,7 @@ def _continuation_nudge(
     investigated = len(investigated_addrs)
     remaining = total_providers - investigated
     turns_left = max_turns - current_turn
-    report_written = bool(assistant_text and _report_already_written(assistant_text))
-
-    # If report is already written AND coverage is sufficient, stop cleanly
-    if report_written and (remaining < 5 or investigated >= total_providers * 0.7):
-        return None
-
-    # If report is written but coverage is poor, nudge to continue + update report
-    if report_written:
-        tool_calls.append({"tool": "_nudge", "arguments": {}, "status": "ok", "result": {}})
-        return (
-            f"You wrote the report but have only investigated {investigated} out of "
-            f"{total_providers} providers ({remaining} remaining). You still have "
-            f"{turns_left} turns left. Continue investigating the unchecked providers — "
-            f"pull property data and calculate max capacity for the ones you missed. "
-            f"Then write a brief ADDENDUM with any new findings at the end."
-        )
-
-    # No report yet — only nudge if significant providers remain uninvestigated
+    # Only nudge if significant providers remain uninvestigated
     if remaining < 5 or investigated >= total_providers * 0.7:
         return None
 
@@ -403,12 +414,10 @@ def _continuation_nudge(
     return (
         f"You have investigated {investigated} out of {total_providers} providers and still have "
         f"{turns_left} turns remaining. "
-        f"DO NOT write the final report yet — continue investigating remaining providers first. "
-        f"Writing the report now would waste remaining turns and leave the investigation incomplete. "
-        f"Focus on the ones you haven't checked yet — pull property data "
+        f"Continue investigating the remaining providers — pull property data "
         f"and calculate max capacity to check for physical impossibility. "
-        f"Save the report for your final "
-        f"turn.{scope_reminder}"
+        f"Remember: the report will be generated automatically after your investigation "
+        f"turns are complete, so use all remaining turns for investigation.{scope_reminder}"
     )
 
 
@@ -444,6 +453,60 @@ def _to_openrouter_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]
             }
         )
     return converted
+
+
+_MAX_STREET_VIEW_IMAGES = 4
+
+
+def _build_image_message(sv_results: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Build a user message with street view images for visual analysis.
+
+    Images are sent as image_url content blocks so vision-capable models
+    can actually see them.  The message is injected temporarily into the
+    API request and NOT stored in the permanent message history (base64
+    images are far too large for the text context budget).
+    """
+    content_blocks: List[Dict[str, Any]] = []
+    for sv in sv_results:
+        address = sv.get("address", "unknown address")
+        images = sv.get("images", [])
+        if not images:
+            continue
+        content_blocks.append({
+            "type": "text",
+            "text": f"Street View images for {address} — analyze whether this looks like a childcare facility:",
+        })
+        for img in images[:_MAX_STREET_VIEW_IMAGES]:
+            b64 = img.get("image_base64", "")
+            status = img.get("status", "")
+            if not b64 or status == "fallback":
+                continue
+            heading = img.get("heading", "?")
+            capture_date = img.get("capture_date", "unknown")
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
+            content_blocks.append({
+                "type": "text",
+                "text": f"(Heading {heading}°, captured {capture_date})",
+            })
+    if len(content_blocks) <= 1:
+        return None
+    return {"role": "user", "content": content_blocks}
+
+
+_REPORT_GENERATION_PROMPT = (
+    "Your investigation turns are now complete. Write the final investigation report.\n\n"
+    "Based on ALL the data you collected during the investigation, write a comprehensive report with:\n"
+    "1. INVESTIGATION NARRATIVE — the full story of what was examined and found\n"
+    "2. PROVIDER DOSSIERS — detailed write-up for each flagged provider\n"
+    "3. PATTERN ANALYSIS — cross-provider patterns discovered\n"
+    "4. CONFIDENCE CALIBRATION — what you're confident about vs uncertain\n"
+    "5. EXPOSURE ESTIMATE — using CCAP rates\n"
+    "6. RECOMMENDATIONS — prioritized next steps\n\n"
+    "Include all findings from the investigation. Do NOT call any tools — just write the report."
+)
 
 
 def _call_tool(name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -491,12 +554,22 @@ def _run_openrouter_investigation(
     thinking_blocks: List[str] = []
     narration = InvestigationNarration(query=query)
     assistant_text: List[str] = []
+    _pending_sv_images: List[Dict[str, Any]] = []  # street view results to show next turn
 
     for turn in range(1, max_turns + 1):
         _enforce_context_budget(messages)
+
+        # Build request messages — inject pending street view images temporarily
+        request_messages = messages
+        if _pending_sv_images:
+            img_msg = _build_image_message(_pending_sv_images)
+            _pending_sv_images = []
+            if img_msg:
+                request_messages = list(messages) + [img_msg]
+
         request_payload = {
             "model": model,
-            "messages": messages,
+            "messages": request_messages,
             "tools": openrouter_tools,
             "tool_choice": "auto",
             "max_tokens": settings.max_tokens,
@@ -577,6 +650,11 @@ def _run_openrouter_investigation(
                     "content": json.dumps(_compact_tool_result(result)),
                 }
             )
+            # Collect street view images for visual analysis in the next turn
+            if tool_name == "get_street_view" and tool_status == "ok" and isinstance(result, dict):
+                sv_images = result.get("images", [])
+                if sv_images and any(img.get("status") != "fallback" for img in sv_images):
+                    _pending_sv_images.append(result)
 
         raw_turns.append(turn_summary)
 
@@ -585,6 +663,44 @@ def _run_openrouter_investigation(
 
         if finish_reason == "stop" and not any(tc.get("function") for tc in tool_calls_block):
             break
+
+    # ── Report generation: one additional LLM call outside the turn budget ──
+    report_text_final = ""
+    if _report_already_written(assistant_text):
+        # LLM wrote the report inline during investigation — extract it
+        report_text_final = _extract_inline_report(assistant_text)
+    else:
+        _enforce_context_budget(messages)
+        messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
+        report_payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": settings.max_tokens,
+        }
+        try:
+            report_resp = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": settings.openrouter_site_url,
+                    "X-Title": settings.openrouter_app_name,
+                },
+                json=report_payload,
+                timeout=settings.tool_timeout_seconds,
+            )
+            if report_resp.ok:
+                report_completion = report_resp.json()
+                report_choice = report_completion.get("choices", [{}])[0]
+                report_text = report_choice.get("message", {}).get("content", "")
+                if report_text:
+                    report_text_final = str(report_text)
+                    narration.add_narration(report_text_final)
+                    narration.add_assistant_text(report_text_final)
+                    assistant_text.append(report_text_final)
+                    raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text_final.strip(), "tool_results": []})
+        except Exception:
+            logger.warning("Report generation call failed", exc_info=True)
 
     metrics = _extract_metrics(tool_calls)
     return {
@@ -596,6 +712,7 @@ def _run_openrouter_investigation(
         "flagged": metrics["flagged"],
         "narration": narration.to_markdown(),
         "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
+        "report_text": report_text_final,
         "tool_calls": tool_calls,
         "thinking": thinking_blocks,
         "raw_turns": raw_turns,
@@ -633,15 +750,24 @@ def _run_openrouter_investigation_stream(
     thinking_blocks: List[str] = []
     narration = InvestigationNarration(query=query)
     assistant_text: List[str] = []
+    _pending_sv_images: List[Dict[str, Any]] = []
 
     try:
         for turn in range(1, max_turns + 1):
             _enforce_context_budget(messages)
             yield {"event": "turn_start", "turn": turn, "max_turns": max_turns}
 
+            # Inject pending street view images temporarily for this API call
+            request_messages = messages
+            if _pending_sv_images:
+                img_msg = _build_image_message(_pending_sv_images)
+                _pending_sv_images = []
+                if img_msg:
+                    request_messages = list(messages) + [img_msg]
+
             request_payload = {
                 "model": model,
-                "messages": messages,
+                "messages": request_messages,
                 "tools": openrouter_tools,
                 "tool_choice": "auto",
                 "max_tokens": settings.max_tokens,
@@ -751,6 +877,11 @@ def _run_openrouter_investigation_stream(
                         "content": json.dumps(_compact_tool_result(result)),
                     }
                 )
+                # Collect street view images for visual analysis in the next turn
+                if tool_name == "get_street_view" and tool_status == "ok" and isinstance(result, dict):
+                    sv_images = result.get("images", [])
+                    if sv_images and any(img.get("status") != "fallback" for img in sv_images):
+                        _pending_sv_images.append(result)
 
                 yield {
                     "event": "tool_payload",
@@ -769,6 +900,46 @@ def _run_openrouter_investigation_stream(
             if finish_reason == "stop" and not any(tc.get("function") for tc in tool_calls_block):
                 break
 
+        # ── Report generation: one additional LLM call outside the turn budget ──
+        report_text_final = ""
+        if _report_already_written(assistant_text):
+            # LLM wrote the report inline during investigation — extract it
+            report_text_final = _extract_inline_report(assistant_text)
+        else:
+            yield {"event": "report_start"}
+            _enforce_context_budget(messages)
+            messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
+            report_payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": settings.max_tokens,
+            }
+            try:
+                report_resp = requests.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {settings.openrouter_api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": settings.openrouter_site_url,
+                        "X-Title": settings.openrouter_app_name,
+                    },
+                    json=report_payload,
+                    timeout=settings.tool_timeout_seconds,
+                )
+                if report_resp.ok:
+                    report_completion = report_resp.json()
+                    report_choice = report_completion.get("choices", [{}])[0]
+                    report_text = report_choice.get("message", {}).get("content", "")
+                    if report_text:
+                        report_text_final = str(report_text)
+                        narration.add_narration(report_text_final)
+                        narration.add_assistant_text(report_text_final)
+                        assistant_text.append(report_text_final)
+                        raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text_final.strip(), "tool_results": []})
+                        yield {"event": "assistant_text", "turn": len(raw_turns), "text": report_text_final.strip()}
+            except Exception:
+                logger.warning("Report generation call failed", exc_info=True)
+
         metrics = _extract_metrics(tool_calls)
         result_payload = {
             "query": query,
@@ -779,6 +950,7 @@ def _run_openrouter_investigation_stream(
             "flagged": metrics["flagged"],
             "narration": narration.to_markdown(),
             "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
+            "report_text": report_text_final,
             "tool_calls": tool_calls,
             "thinking": thinking_blocks,
             "raw_turns": raw_turns,
@@ -803,6 +975,7 @@ def _run_openrouter_investigation_stream(
             "flagged": metrics["flagged"],
             "narration": narration.to_markdown(),
             "assistant_text": "\n".join(assistant_text) or "Investigation failed.",
+            "report_text": "",
             "tool_calls": tool_calls,
             "thinking": thinking_blocks,
             "raw_turns": raw_turns,
@@ -829,6 +1002,7 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
             "turns": 1,
             "narration": narration.to_markdown(),
             "assistant_text": "No providers found in fallback dataset.",
+            "report_text": "No providers found in fallback dataset.",
             "tool_calls": [],
             "thinking": [],
             "raw_turns": [
@@ -909,6 +1083,7 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
         "turns": min(len(providers), max_turns),
         "narration": narration.to_markdown(),
         "assistant_text": summary,
+        "report_text": summary,
         "tool_calls": tool_calls,
         "thinking": ["Offline deterministic reasoning mode used for stable results."],
         "raw_turns": raw_turns,
@@ -935,6 +1110,7 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
                 "provider_count": 0, "flagged": [], "turns": 1,
                 "narration": narration.to_markdown(),
                 "assistant_text": "No providers found in fallback dataset.",
+                "report_text": "No providers found in fallback dataset.",
                 "tool_calls": [], "thinking": [], "raw_turns": [
                     {"turn": 1, "assistant": "No providers found in area.", "tools": []}
                 ],
@@ -1063,6 +1239,7 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
             "turns": total,
             "narration": narration.to_markdown(),
             "assistant_text": summary,
+            "report_text": summary,
             "tool_calls": tool_calls,
             "thinking": ["Offline deterministic reasoning mode used for stable results."],
             "raw_turns": raw_turns,
@@ -1168,6 +1345,35 @@ def run_investigation(
             if getattr(response, "stop_reason", None) == "end_turn":
                 break
 
+        # ── Report generation: one additional LLM call outside the turn budget ──
+        report_text_final = ""
+        if _report_already_written(assistant_text):
+            # LLM wrote the report inline during investigation — extract it
+            report_text_final = _extract_inline_report(assistant_text)
+        else:
+            messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
+            try:
+                report_response = client.messages.create(
+                    model=model or settings.model,
+                    max_tokens=settings.max_tokens,
+                    thinking={"type": "enabled", "budget_tokens": settings.thinking_budget_tokens},
+                    system=load_system_prompt(target_state=target_state_anthropic, target_zip=target_zip_anthropic, max_turns=max_turns),
+                    messages=messages,
+                )
+                report_parts = []
+                for block in _normalize_blocks(report_response.content):
+                    if block.get("type") == "text":
+                        report_text = block.get("text", "")
+                        if report_text:
+                            report_parts.append(report_text)
+                            narration.add_narration(report_text)
+                            narration.add_assistant_text(report_text)
+                            assistant_text.append(report_text)
+                            raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text.strip(), "tool_results": []})
+                report_text_final = "\n".join(report_parts)
+            except Exception:
+                logger.warning("Anthropic report generation call failed", exc_info=True)
+
         metrics = _extract_metrics(tool_calls)
         result = {
             "query": query,
@@ -1178,6 +1384,7 @@ def run_investigation(
             "flagged": metrics["flagged"],
             "narration": narration.to_markdown(),
             "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
+            "report_text": report_text_final,
             "tool_calls": tool_calls,
             "thinking": thinking_blocks,
             "raw_turns": raw_turns,

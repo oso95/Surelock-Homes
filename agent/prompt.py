@@ -36,15 +36,17 @@ def load_system_prompt(
     if max_turns and max_turns > 0:
         budget_block = (
             f"\n\n<turn_budget>\n"
-            f"TURN BUDGET: You have {max_turns} turns to complete this investigation. "
-            f"Each turn = one LLM response (which may include multiple tool calls).\n\n"
+            f"TURN BUDGET: You have {max_turns} turns for investigation. "
+            f"Each turn = one LLM response (which may include multiple tool calls).\n"
+            f"The final report will be generated AUTOMATICALLY after your investigation "
+            f"turns are complete — do NOT write the report yourself.\n\n"
             f"MANDATORY PLANNING STEP — before calling any investigation tools:\n"
             f"1. First call search_childcare_providers to see all providers in the area\n"
             f"2. Count providers by type: DCC/Child Care Center (deep investigation) vs "
             f"DCH/Family (quick triage) vs GDC/Group (quick triage)\n"
             f"3. Plan your turn budget:\n"
-            f"   - Reserve 2 turns for writing the final report\n"
-            f"   - Available investigation turns = {max_turns - 2}\n"
+            f"   - ALL {max_turns} turns are for investigation — no need to reserve turns "
+            f"for the report\n"
             f"   - Each turn can include MULTIPLE tool calls — batch property lookups "
             f"and capacity calcs for 3-5 providers per turn\n"
             f"4. Choose your strategy based on DCC count:\n"
@@ -65,7 +67,8 @@ def load_system_prompt(
             f"flagged ones\n"
             f"- Track progress after each batch: \"Investigated X of Y DCCs, Z turns "
             f"remaining\"\n"
-            f"- The report goes in your FINAL turn — never write it early\n"
+            f"- Do NOT write the final report — it will be generated separately after "
+            f"your investigation\n"
             f"</turn_budget>"
         )
         text += budget_block

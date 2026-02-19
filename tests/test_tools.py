@@ -624,7 +624,8 @@ def test_system_prompt_includes_turn_budget():
     prompt_with = load_system_prompt(target_state="MN", target_zip="55401", max_turns=25)
     assert "TURN BUDGET" in prompt_with
     assert "25 turns" in prompt_with
-    assert "23" in prompt_with  # 25 - 2 reserved for report
+    assert "report will be generated AUTOMATICALLY" in prompt_with
+    assert "do NOT write the report yourself" in prompt_with
 
     prompt_without = load_system_prompt(target_state="MN", target_zip="55401")
     assert "TURN BUDGET" not in prompt_without
@@ -633,8 +634,8 @@ def test_system_prompt_includes_turn_budget():
 # ── Continuation nudge: report-already-written detection ──
 
 
-def test_nudge_suppressed_after_report_with_good_coverage():
-    """_continuation_nudge returns None if report written AND coverage is sufficient."""
+def test_nudge_suppressed_with_good_coverage():
+    """_continuation_nudge returns None when coverage is sufficient."""
     from agent.loop import _continuation_nudge
 
     providers = [{"name": f"P{i}", "address": f"{i} St"} for i in range(50)]
@@ -645,37 +646,12 @@ def test_nudge_suppressed_after_report_with_good_coverage():
     for i in range(40):
         tool_calls.append({"tool": "get_property_data", "arguments": {"address": f"{i} St"}, "status": "ok", "result": {}})
 
-    report_text = [
-        "INVESTIGATION REPORT\n\nPROVIDER DOSSIERS\n\nPATTERN ANALYSIS\n\n"
-        "EXPOSURE ESTIMATE\n\nCONFIDENCE CALIBRATION\n\nInvestigation complete."
-    ]
-    nudge = _continuation_nudge(tool_calls, 10, 25, assistant_text=report_text)
-    assert nudge is None  # good coverage + report → stop cleanly
+    nudge = _continuation_nudge(tool_calls, 10, 25, assistant_text=["Investigating..."])
+    assert nudge is None  # good coverage → stop
 
 
-def test_nudge_continues_after_premature_report():
-    """_continuation_nudge tells agent to continue if report written but coverage is poor."""
-    from agent.loop import _continuation_nudge
-
-    providers = [{"name": f"P{i}", "address": f"{i} St"} for i in range(50)]
-    # Only 5 out of 50 investigated (10% coverage — poor)
-    tool_calls = [
-        {"tool": "search_childcare_providers", "arguments": {}, "status": "ok", "result": providers},
-        {"tool": "get_property_data", "arguments": {"address": "1 St"}, "status": "ok", "result": {}},
-    ]
-
-    report_text = [
-        "INVESTIGATION REPORT\n\nPROVIDER DOSSIERS\n\nPATTERN ANALYSIS\n\n"
-        "EXPOSURE ESTIMATE\n\nCONFIDENCE CALIBRATION\n\nInvestigation complete."
-    ]
-    nudge = _continuation_nudge(tool_calls, 5, 25, assistant_text=report_text)
-    assert nudge is not None
-    assert "only investigated 1 out of 50" in nudge
-    assert "ADDENDUM" in nudge
-
-
-def test_nudge_without_report_shows_progress():
-    """_continuation_nudge shows progress when no report written and coverage is low."""
+def test_nudge_shows_progress_with_low_coverage():
+    """_continuation_nudge shows progress and tells agent to keep investigating."""
     from agent.loop import _continuation_nudge
 
     providers = [{"name": f"P{i}", "address": f"{i} St"} for i in range(50)]
@@ -688,4 +664,4 @@ def test_nudge_without_report_shows_progress():
     assert nudge is not None
     assert "1 out of 50" in nudge
     assert "20 turns remaining" in nudge
-    assert "DO NOT write the final report" in nudge
+    assert "report will be generated automatically" in nudge
