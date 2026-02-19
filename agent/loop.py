@@ -139,28 +139,41 @@ def _summarize_for_model(value: Any, max_depth: int = 2) -> Any:
     return value
 
 
+_ZIP_PREFIX_TO_STATE: Dict[str, str] = {
+    **{str(p): "IL" for p in range(600, 630)},
+    **{str(p): "MN" for p in range(550, 568)},
+}
+
+_STATE_NAMES: Dict[str, str] = {
+    "illinois": "IL",
+    "minnesota": "MN",
+}
+
+_STATE_ABBREVS = set(_STATE_NAMES.values())
+
+_DEFAULT_STATE = "IL"
+
+
 def _infer_state_and_zip(query: str) -> Tuple[str, str | None]:
     zip_match = re.search(r"\b\d{5}\b", query)
-    # Use word-boundary matching to avoid false positives (e.g. "building" matching "il")
-    if re.search(r"\billinois\b", query, re.IGNORECASE) or re.search(r"\bIL\b", query):
-        state = "IL"
-    elif re.search(r"\bminnesota\b", query, re.IGNORECASE) or re.search(r"\bMN\b", query):
-        state = "MN"
-    elif zip_match:
-        # Infer state from ZIP code prefix when no explicit state is mentioned
+
+    # Check for full state names (case-insensitive)
+    for name, code in _STATE_NAMES.items():
+        if re.search(r"\b" + name + r"\b", query, re.IGNORECASE):
+            return code, zip_match.group(0) if zip_match else None
+
+    # Check for state abbreviations (case-sensitive to avoid false positives)
+    for abbrev in _STATE_ABBREVS:
+        if re.search(r"\b" + abbrev + r"\b", query):
+            return abbrev, zip_match.group(0) if zip_match else None
+
+    # Infer state from ZIP code prefix
+    if zip_match:
         zip_prefix = zip_match.group(0)[:3]
-        if zip_prefix in ("600", "601", "602", "603", "604", "605", "606", "607", "608", "609",
-                          "610", "611", "612", "613", "614", "615", "616", "617", "618", "619",
-                          "620", "622", "623", "624", "625", "626", "627", "628", "629"):
-            state = "IL"
-        elif zip_prefix in ("550", "551", "553", "554", "555", "556", "557", "558", "559",
-                            "560", "561", "562", "563", "564", "565", "566", "567"):
-            state = "MN"
-        else:
-            state = "IL"  # Default to IL if ZIP doesn't match known ranges
-    else:
-        state = "IL"  # Default to IL rather than MN
-    return state, zip_match.group(0) if zip_match else None
+        state = _ZIP_PREFIX_TO_STATE.get(zip_prefix, _DEFAULT_STATE)
+        return state, zip_match.group(0)
+
+    return _DEFAULT_STATE, None
 
 
 def _compact_tool_result(value: Any) -> Any:
@@ -1404,36 +1417,43 @@ def run_investigation_stream(
     model: str | None = None,
 ) -> Generator[Dict[str, Any], None, None]:
     settings = load_settings()
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
-    if offline:
-        yield from _offline_investigation_stream(query, max_turns=max_turns)
-        return
+    def _inner():
+        if offline:
+            yield from _offline_investigation_stream(query, max_turns=max_turns)
+            return
 
-    if settings.llm_provider == "openrouter":
-        if not settings.openrouter_api_key:
-            raise RuntimeError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter.")
-        yield from _run_openrouter_investigation_stream(
-            query,
-            max_turns=max_turns,
-            model=model or settings.model,
-            settings=settings,
-        )
-        return
+        if settings.llm_provider == "openrouter":
+            if not settings.openrouter_api_key:
+                raise RuntimeError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter.")
+            yield from _run_openrouter_investigation_stream(
+                query,
+                max_turns=max_turns,
+                model=model or settings.model,
+                settings=settings,
+            )
+            return
 
-    if settings.llm_provider == "anthropic":
-        if not settings.anthropic_api_key or anthropic is None:
-            raise RuntimeError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic.")
-        # No fine-grained streaming with Anthropic in this path; provide a single completion event.
-        yield {"event": "start", "query": query, "provider": "anthropic", "max_turns": max_turns}
-        try:
-            result = run_investigation(query, max_turns=max_turns, offline=False, model=model, save_output=False)
-            yield {"event": "complete", "payload": result}
-        except Exception as exc:
-            yield {"event": "error", "error": _sanitize_error(exc), "query": query}
-            result = {"query": query, "status": "error", "error": _sanitize_error(exc), "mode": "agent"}
-            yield {"event": "complete", "payload": result}
-        return
-    raise RuntimeError(f"Unknown LLM_PROVIDER '{settings.llm_provider}'. Set LLM_PROVIDER=anthropic or openrouter.")
+        if settings.llm_provider == "anthropic":
+            if not settings.anthropic_api_key or anthropic is None:
+                raise RuntimeError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic.")
+            # No fine-grained streaming with Anthropic in this path; provide a single completion event.
+            yield {"event": "start", "query": query, "provider": "anthropic", "max_turns": max_turns}
+            try:
+                result = run_investigation(query, max_turns=max_turns, offline=False, model=model, save_output=False)
+                yield {"event": "complete", "payload": result}
+            except Exception as exc:
+                yield {"event": "error", "error": _sanitize_error(exc), "query": query}
+                result = {"query": query, "status": "error", "error": _sanitize_error(exc), "mode": "agent"}
+                yield {"event": "complete", "payload": result}
+            return
+        raise RuntimeError(f"Unknown LLM_PROVIDER '{settings.llm_provider}'. Set LLM_PROVIDER=anthropic or openrouter.")
+
+    for event in _inner():
+        yield event
+        if event.get("event") == "complete" and "payload" in event:
+            _persist_investigation(run_id, event["payload"], output_dir=OUTPUT_DIR)
 
 
 def parse_args() -> argparse.Namespace:

@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+from tools.providers import PROVIDER_REGISTRY
+from tools.licensing import LICENSING_REGISTRY
+from tools.capacity import CAPACITY_REGISTRY
+
 
 def get_tool_definitions():
+    provider_states = sorted(PROVIDER_REGISTRY.keys())
+    licensing_states = sorted(LICENSING_REGISTRY.keys())
+    capacity_states = sorted(CAPACITY_REGISTRY.keys())
+
     return [
         {
             "name": "search_childcare_providers",
@@ -10,7 +18,7 @@ def get_tool_definitions():
                 "type": "object",
                 "properties": {
                     "city": {"type": "string", "description": "City name"},
-                    "state": {"type": "string", "enum": ["MN", "IL"]},
+                    "state": {"type": "string", "enum": provider_states},
                     "zip": {"type": "string", "description": "5-digit ZIP code"},
                     "radius_miles": {"type": "number", "default": 5},
                 },
@@ -67,7 +75,7 @@ def get_tool_definitions():
                 "type": "object",
                 "properties": {
                     "provider_name": {"type": "string"},
-                    "state": {"type": "string", "enum": ["MN", "IL"]},
+                    "state": {"type": "string", "enum": licensing_states},
                     "address": {"type": "string", "description": "For disambiguation if multiple matches"},
                 },
                 "required": ["provider_name", "state"],
@@ -98,7 +106,7 @@ def get_tool_definitions():
                 "type": "object",
                 "properties": {
                     "building_sqft": {"type": "number"},
-                    "state": {"type": "string", "enum": ["MN", "IL"]},
+                    "state": {"type": "string", "enum": capacity_states},
                     "usable_ratio": {
                         "type": "number",
                         "default": 0.65,
@@ -114,4 +122,3 @@ def get_tool_definitions():
             "input_schema": {"type": "object", "properties": {"address": {"type": "string"}}, "required": ["address"]},
         },
     ]
-

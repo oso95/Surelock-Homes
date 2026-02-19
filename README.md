@@ -244,6 +244,35 @@ When saving is enabled in loop execution, results are written to:
 Implementation notes:
 - Many tools attempt live lookup first, then fallback to local data.
 - Some tools return structured lists (not only dicts), and stream payload handling is normalized in `agent/loop.py`.
+- State-specific behavior is driven by per-module registries (see below). Tool schema enums are auto-generated from registry keys.
+
+## State/County Extensibility
+
+Each state-specific tool module uses a **registry-based plugin architecture**. Instead of hardcoded if/else dispatch, each module defines a dataclass config and a registry dict mapping state codes to configs:
+
+| Module | Registry | Config fields |
+|--------|----------|---------------|
+| `tools/providers.py` | `PROVIDER_REGISTRY` | `live_loader`, `live_cache_path`, `fallback_csv`, `enrichment` |
+| `tools/property.py` | `PROPERTY_REGISTRY` | `live_query`, `fallback_csv`, `default_county`, `source_label` |
+| `tools/licensing.py` | `LICENSING_REGISTRY` | `fallback_csv`, `live_matcher` |
+| `tools/business_reg.py` | `BUSINESS_REG_REGISTRY` | `live_probe` |
+| `tools/capacity.py` | `CAPACITY_REGISTRY` | `sqft_per_child`, `regulation` |
+
+`tools/definitions.py` imports these registries and generates tool schema `enum` lists dynamically. `agent/loop.py` uses data tables (`_ZIP_PREFIX_TO_STATE`, `_STATE_NAMES`) to infer state from query text.
+
+### Adding a new state (e.g. TX / Harris County)
+
+All changes are additive — no modification of existing logic required:
+
+1. **`tools/providers.py`**: Write `_load_tx_live_records()`, add `PROVIDER_REGISTRY["TX"] = ProviderStateConfig(...)`
+2. **`tools/property.py`**: Write `_query_harris()`, add `PROPERTY_REGISTRY["TX"] = PropertyCountyConfig(...)`
+3. **`tools/licensing.py`**: Write `_find_live_tx_matches()`, add `LICENSING_REGISTRY["TX"] = LicensingStateConfig(...)`
+4. **`tools/business_reg.py`**: Write `_probe_tx_sos()`, add `BUSINESS_REG_REGISTRY["TX"] = BusinessRegStateConfig(...)`
+5. **`tools/capacity.py`**: Add `CAPACITY_REGISTRY["TX"] = CapacityStateConfig(sqft_per_child=30, regulation="TX HHS 26 TAC 746.3407")`
+6. **`agent/loop.py`**: Add `"texas": "TX"` to `_STATE_NAMES`, add TX ZIP prefixes to `_ZIP_PREFIX_TO_STATE`
+7. **`data/`**: Create `tx_providers.csv`, `harris_parcels.csv`, `tx_licensing.csv`
+
+`definitions.py` auto-discovers the new state from the registries — no manual enum updates needed.
 
 ## Data and Cache
 

@@ -3,13 +3,24 @@ from __future__ import annotations
 import csv
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, List, Optional
 
 from config import DATA_DIR
 from tools.providers import _load_il_live_records, _load_stale_cache, _query_parentaware_by_name
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LicensingStateConfig:
+    fallback_csv: Path
+    live_matcher: Callable[[str, Optional[str]], list[Dict[str, Any]]]
+
+
+# Registry populated after state-specific functions are defined (see bottom of module)
+LICENSING_REGISTRY: Dict[str, LicensingStateConfig] = {}
 
 
 def _normalize(value: str | None) -> str:
@@ -142,57 +153,39 @@ def check_licensing_status(
         return {"status": "error", "error": "provider_name is required"}
 
     state_key = (state or "").upper()
-    path = DATA_DIR / ("mn_licensing.csv" if state_key == "MN" else "il_licensing.csv")
-    target = _normalize(provider_name)
+    config = LICENSING_REGISTRY.get(state_key)
 
-    for row in _read_csv(path):
-        provider_row = _normalize(row.get("provider_name"))
-        if target in provider_row:
-            if address and not _addr_matches(address, row.get("address")):
-                continue
-            return {
-                "status": "found",
-                "provider_name": row.get("provider_name", ""),
-                "state": row.get("state", state_key),
-                "license_type": row.get("license_type", ""),
-                "license_status": row.get("license_status", ""),
-                "issue_date": row.get("issue_date", ""),
-                "expiration_date": row.get("expiration_date", ""),
-                "capacity": int(float(row.get("capacity", 0) or 0)),
-                "violation_history": row.get("violation_history", ""),
-                "inspection_notes": row.get("inspection_notes", ""),
-            }
+    # Check CSV fallback first
+    if config is not None:
+        target = _normalize(provider_name)
+        for row in _read_csv(config.fallback_csv):
+            provider_row = _normalize(row.get("provider_name"))
+            if target in provider_row:
+                if address and not _addr_matches(address, row.get("address")):
+                    continue
+                return {
+                    "status": "found",
+                    "provider_name": row.get("provider_name", ""),
+                    "state": row.get("state", state_key),
+                    "license_type": row.get("license_type", ""),
+                    "license_status": row.get("license_status", ""),
+                    "issue_date": row.get("issue_date", ""),
+                    "expiration_date": row.get("expiration_date", ""),
+                    "capacity": int(float(row.get("capacity", 0) or 0)),
+                    "violation_history": row.get("violation_history", ""),
+                    "inspection_notes": row.get("inspection_notes", ""),
+                }
 
-    if state_key == "MN":
-        matches = _find_live_mn_matches(provider_name, address)
+    # Try live matcher
+    if config is not None:
+        matches = config.live_matcher(provider_name, address)
         if matches:
             if len(matches) == 1:
                 return matches[0]
-            return {
+            result: Dict[str, Any] = {
                 "status": "found",
                 "provider_name": provider_name,
-                "state": "MN",
-                "license_type": matches[0].get("license_type", ""),
-                "license_status": matches[0].get("license_status", ""),
-                "issue_date": matches[0].get("issue_date", ""),
-                "expiration_date": matches[0].get("expiration_date", ""),
-                "capacity": matches[0].get("capacity", 0),
-                "age_range": matches[0].get("age_range", ""),
-                "accepts_ccap": matches[0].get("accepts_ccap"),
-                "violation_history": "",
-                "inspection_notes": "Multiple ParentAware records found; returning first match",
-                "results": matches,
-            }
-
-    if state_key == "IL":
-        matches = _find_live_il_matches(provider_name, address)
-        if matches:
-            if len(matches) == 1:
-                return matches[0]
-            return {
-                "status": "found",
-                "provider_name": provider_name,
-                "state": "IL",
+                "state": state_key,
                 "license_type": matches[0].get("license_type", ""),
                 "license_status": matches[0].get("license_status", ""),
                 "issue_date": matches[0].get("issue_date", ""),
@@ -202,6 +195,11 @@ def check_licensing_status(
                 "inspection_notes": "Multiple live records found; returning first match",
                 "results": matches,
             }
+            # Include extra fields from the first match (e.g. age_range, accepts_ccap)
+            for extra_key in ("age_range", "accepts_ccap"):
+                if extra_key in matches[0]:
+                    result[extra_key] = matches[0][extra_key]
+            return result
 
     return {
         "status": "not_found",
@@ -209,3 +207,16 @@ def check_licensing_status(
         "state": state_key,
         "error": "No matching licensing record in local dataset.",
     }
+
+
+# Populate the registry now that all state-specific functions are defined
+LICENSING_REGISTRY.update({
+    "MN": LicensingStateConfig(
+        fallback_csv=DATA_DIR / "mn_licensing.csv",
+        live_matcher=_find_live_mn_matches,
+    ),
+    "IL": LicensingStateConfig(
+        fallback_csv=DATA_DIR / "il_licensing.csv",
+        live_matcher=_find_live_il_matches,
+    ),
+})

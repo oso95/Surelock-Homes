@@ -5,13 +5,23 @@ import logging
 import re
 import requests
 from bs4 import BeautifulSoup
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote, urlencode
 
 from config import DATA_DIR, load_settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BusinessRegStateConfig:
+    live_probe: Callable[[str], Optional[Dict[str, Any]]]
+
+
+# Registry populated after state-specific probe functions are defined (see bottom of module)
+BUSINESS_REG_REGISTRY: Dict[str, BusinessRegStateConfig] = {}
 
 
 def _normalize(value: str | None) -> str:
@@ -145,40 +155,47 @@ def _fetch_mn_sos_detail(session: requests.Session, href: str, timeout: float) -
     return detail
 
 
-def _live_registration_probe(state: str, name: str) -> Dict[str, Any] | None:
-    state_key = (state or "").upper()
+def _probe_il_sos(name: str) -> Optional[Dict[str, Any]]:
     target = _normalize(name)
     settings = load_settings()
-    if state_key == "IL":
-        endpoint = "https://www.cyberdriveillinois.com/corpservices/api/entitysearch?" + urlencode({"searchstring": target})
-        try:
-            response = requests.get(endpoint, timeout=settings.probe_timeout_seconds)
-            if response.status_code == 403:
-                return {
-                    "status": "blocked",
-                    "note": "IL SOS API is behind a CDN firewall (HTTP 403). Direct API access is not available.",
-                }
-            if 200 <= response.status_code < 400:
-                return {
-                    "status": "live_available_not_parsed",
-                    "note": "cyberdriveillinois endpoint reachable; parser is not implemented in this environment.",
-                }
-        except Exception:
-            logger.warning("IL business registration probe failed", exc_info=True)
-            return None
-    elif state_key == "MN":
-        try:
-            results = _search_mn_sos(name)
-            if results:
-                return {"status": "found", "results": results}
+    endpoint = "https://www.cyberdriveillinois.com/corpservices/api/entitysearch?" + urlencode({"searchstring": target})
+    try:
+        response = requests.get(endpoint, timeout=settings.probe_timeout_seconds)
+        if response.status_code == 403:
             return {
-                "status": "live_no_match",
-                "note": "MN SOS search returned no matching filings.",
+                "status": "blocked",
+                "note": "IL SOS API is behind a CDN firewall (HTTP 403). Direct API access is not available.",
             }
-        except Exception:
-            logger.warning("MN SOS live search failed", exc_info=True)
-            return None
+        if 200 <= response.status_code < 400:
+            return {
+                "status": "live_available_not_parsed",
+                "note": "cyberdriveillinois endpoint reachable; parser is not implemented in this environment.",
+            }
+    except Exception:
+        logger.warning("IL business registration probe failed", exc_info=True)
     return None
+
+
+def _probe_mn_sos(name: str) -> Optional[Dict[str, Any]]:
+    try:
+        results = _search_mn_sos(name)
+        if results:
+            return {"status": "found", "results": results}
+        return {
+            "status": "live_no_match",
+            "note": "MN SOS search returned no matching filings.",
+        }
+    except Exception:
+        logger.warning("MN SOS live search failed", exc_info=True)
+    return None
+
+
+def _live_registration_probe(state: str, name: str) -> Dict[str, Any] | None:
+    state_key = (state or "").upper()
+    config = BUSINESS_REG_REGISTRY.get(state_key)
+    if config is None:
+        return None
+    return config.live_probe(name)
 
 
 def check_business_registration(
@@ -232,3 +249,10 @@ def check_business_registration(
         }
 
     return matches if search_type == "agent" else {"status": "found", "results": matches}
+
+
+# Populate the registry now that all probe functions are defined
+BUSINESS_REG_REGISTRY.update({
+    "MN": BusinessRegStateConfig(live_probe=_probe_mn_sos),
+    "IL": BusinessRegStateConfig(live_probe=_probe_il_sos),
+})

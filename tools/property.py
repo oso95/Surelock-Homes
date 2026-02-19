@@ -3,8 +3,9 @@ from __future__ import annotations
 import csv
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -85,6 +86,18 @@ DIRECTIONS = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PropertyCountyConfig:
+    live_query: Callable[[str], Dict[str, Any]]
+    fallback_csv: Path
+    default_county: str
+    source_label: str
+
+
+# Registry populated after state-specific query functions are defined (see bottom of module)
+PROPERTY_REGISTRY: Dict[str, PropertyCountyConfig] = {}
 
 
 def _extract_zip(address: str) -> str:
@@ -442,71 +455,35 @@ def get_property_data(
         return {"status": "error", "error": "address is required"}
 
     state_key = (state or "").upper()
+    config = PROPERTY_REGISTRY.get(state_key)
 
-    if not offline and state_key == "MN":
+    if not offline and config is not None:
         live_status = None
         live_error: str | None = None
         try:
-            live = _query_hennepin(address)
+            live = config.live_query(address)
             if live:
                 result = {
                     "status": "found",
-                    "source": "live_hennepin",
+                    "source": config.source_label,
                     "address": live.get("address", address),
                     "building_sqft": live.get("building_sqft", 0.0),
                     "lot_size": live.get("lot_size", ""),
                     "zoning": live.get("zoning", ""),
                     "property_class": live.get("property_class", ""),
                     "year_built": live.get("year_built", 0),
-                    "county": county or "Hennepin",
-                    "state": "MN",
+                    "county": county or config.default_county,
+                    "state": state_key,
                 }
-                for extra in ("building_market_value", "total_market_value", "owner_name", "latitude", "longitude", "note"):
+                for extra in ("building_market_value", "total_market_value", "owner_name",
+                              "latitude", "longitude", "note", "pin", "source_dataset", "assessed_total"):
                     if live.get(extra):
                         result[extra] = live[extra]
                 return result
         except Exception as exc:
             live_status = "failed"
             live_error = str(exc)
-            logger.warning("Live Hennepin query failed for %s: %s", address, exc, exc_info=True)
-        if live_status:
-            return _fallback_property_result(
-                address=address,
-                state_key=state_key,
-                county=county,
-                live_error=live_error,
-            )
-    elif not offline and state_key == "IL":
-        live_status = None
-        live_error: str | None = None
-        try:
-            live = _query_cook(address)
-            if live:
-                result = {
-                    "status": "found",
-                    "source": "live_cook",
-                    "address": live.get("address", address),
-                    "building_sqft": live.get("building_sqft", 0.0),
-                    "lot_size": live.get("lot_size", ""),
-                    "zoning": live.get("zoning", ""),
-                    "property_class": live.get("property_class", ""),
-                    "year_built": live.get("year_built", 0),
-                    "county": county or "Cook",
-                    "state": "IL",
-                }
-                if live.get("pin"):
-                    result["pin"] = live["pin"]
-                if live.get("source_dataset"):
-                    result["source_dataset"] = live["source_dataset"]
-                if live.get("assessed_total"):
-                    result["assessed_total"] = live["assessed_total"]
-                if live.get("note"):
-                    result["note"] = live["note"]
-                return result
-        except Exception as exc:
-            live_status = "failed"
-            live_error = str(exc)
-            logger.warning("Live Cook query failed for %s: %s", address, exc, exc_info=True)
+            logger.warning("Live %s query failed for %s: %s", config.default_county, address, exc, exc_info=True)
         if live_status:
             return _fallback_property_result(
                 address=address,
@@ -515,14 +492,11 @@ def get_property_data(
                 live_error=live_error,
             )
 
-    source_paths = []
-    if state_key == "MN":
-        source_paths.append(DATA_DIR / "hennepin_parcels.csv")
-    elif state_key == "IL":
-        source_paths.append(DATA_DIR / "cook_parcels.csv")
+    # Fallback to CSV datasets
+    if config is not None:
+        source_paths = [config.fallback_csv]
     else:
-        source_paths.append(DATA_DIR / "hennepin_parcels.csv")
-        source_paths.append(DATA_DIR / "cook_parcels.csv")
+        source_paths = [c.fallback_csv for c in PROPERTY_REGISTRY.values()]
 
     for path in source_paths:
         if not path.exists():
@@ -564,14 +538,11 @@ def _fallback_property_result(
     county: str | None = None,
     live_error: str | None = None,
 ) -> Dict[str, Any]:
-    fallback_paths = []
-    if state_key == "MN":
-        fallback_paths.append(DATA_DIR / "hennepin_parcels.csv")
-    elif state_key == "IL":
-        fallback_paths.append(DATA_DIR / "cook_parcels.csv")
+    config = PROPERTY_REGISTRY.get(state_key)
+    if config is not None:
+        fallback_paths = [config.fallback_csv]
     else:
-        fallback_paths.append(DATA_DIR / "hennepin_parcels.csv")
-        fallback_paths.append(DATA_DIR / "cook_parcels.csv")
+        fallback_paths = [c.fallback_csv for c in PROPERTY_REGISTRY.values()]
 
     for path in fallback_paths:
         if not path.exists():
@@ -607,3 +578,20 @@ def _fallback_property_result(
         "error": "no parcel match in local datasets",
         "live_error": live_error,
     }
+
+
+# Populate the registry now that all query functions are defined
+PROPERTY_REGISTRY.update({
+    "MN": PropertyCountyConfig(
+        live_query=_query_hennepin,
+        fallback_csv=DATA_DIR / "hennepin_parcels.csv",
+        default_county="Hennepin",
+        source_label="live_hennepin",
+    ),
+    "IL": PropertyCountyConfig(
+        live_query=_query_cook,
+        fallback_csv=DATA_DIR / "cook_parcels.csv",
+        default_county="Cook",
+        source_label="live_cook",
+    ),
+})

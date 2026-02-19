@@ -5,9 +5,10 @@ import io
 import logging
 import re
 import zipfile
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -42,6 +43,18 @@ MN_LIVE_CACHE = DATA_DIR / "mn_providers_live.csv"
 IL_LIVE_CACHE = DATA_DIR / "il_providers_live.csv"
 
 STATE_COLUMNS = ("name", "address", "city", "zip", "capacity", "license_type", "status", "state", "license_number")
+
+
+@dataclass
+class ProviderStateConfig:
+    live_loader: Callable[[], List[Dict[str, Any]]]
+    live_cache_path: Path
+    fallback_csv: Path
+    enrichment: Optional[Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]] = None
+
+
+# Registry populated after state-specific functions are defined (see bottom of module)
+PROVIDER_REGISTRY: Dict[str, ProviderStateConfig] = {}
 
 
 def _normalize(value: Optional[str]) -> str:
@@ -291,24 +304,25 @@ def _load_il_live_records() -> List[Dict[str, Any]]:
 
 
 def _get_fallback_records(state_key: str) -> List[Dict[str, str]]:
-    if state_key == "MN":
-        return _read_csv(DATA_DIR / "mn_providers.csv")
-    if state_key == "IL":
-        return _read_csv(DATA_DIR / "il_providers.csv")
-    return []
+    config = PROVIDER_REGISTRY.get(state_key)
+    if config is None:
+        return []
+    return _read_csv(config.fallback_csv)
 
 
 def _get_live_cache_path(state_key: str) -> Optional[Path]:
-    if state_key == "MN":
-        return MN_LIVE_CACHE
-    if state_key == "IL":
-        return IL_LIVE_CACHE
-    return None
+    config = PROVIDER_REGISTRY.get(state_key)
+    if config is None:
+        return None
+    return config.live_cache_path
 
 
 def _load_stale_cache(state_key: str) -> List[Dict[str, Any]]:
-    cache_path = _get_live_cache_path(state_key)
-    if cache_path is None or not cache_path.exists():
+    config = PROVIDER_REGISTRY.get(state_key)
+    if config is None:
+        return []
+    cache_path = config.live_cache_path
+    if not cache_path.exists():
         return []
     return _read_csv(cache_path)
 
@@ -432,21 +446,21 @@ def search_childcare_providers(
 
     # Online mode: three-tier hierarchy — live, stale cache, empty (NEVER fixtures)
 
+    config = PROVIDER_REGISTRY.get(state_key)
+
     # Tier 1: Fresh live fetch
     records: List[Dict[str, Any]] = []
-    try:
-        if state_key == "MN":
-            records = _load_mn_live_records()
-        elif state_key == "IL":
-            records = _load_il_live_records()
-    except Exception:
-        logger.warning("Failed to load %s live records", state_key, exc_info=True)
-        records = []
+    if config is not None:
+        try:
+            records = config.live_loader()
+        except Exception:
+            logger.warning("Failed to load %s live records", state_key, exc_info=True)
+            records = []
 
     if records:
         filtered = _filter(records, city=city, state=state_key, zip_code=zip, radius_miles=radius_miles)
-        if state_key == "MN" and filtered:
-            _enrich_mn_with_parentaware(filtered)
+        if config is not None and config.enrichment and filtered:
+            config.enrichment(filtered)
         return _tag_source(filtered, "live")
 
     # Tier 2: Stale cache (real data from a previous successful fetch)
@@ -461,13 +475,27 @@ def search_childcare_providers(
     return []
 
 
-def refresh_mn_provider_cache() -> List[Dict[str, Any]]:
-    if MN_LIVE_CACHE.exists():
-        MN_LIVE_CACHE.unlink()
-    return _load_mn_live_records()
+def refresh_provider_cache(state_key: str) -> List[Dict[str, Any]]:
+    config = PROVIDER_REGISTRY.get((state_key or "").upper())
+    if config is None:
+        raise ValueError(f"state must be one of {sorted(PROVIDER_REGISTRY.keys())}")
+    if config.live_cache_path.exists():
+        config.live_cache_path.unlink()
+    return config.live_loader()
 
 
-def refresh_il_provider_cache() -> List[Dict[str, Any]]:
-    if IL_LIVE_CACHE.exists():
-        IL_LIVE_CACHE.unlink()
-    return _load_il_live_records()
+# Populate the registry now that all state-specific functions are defined
+PROVIDER_REGISTRY.update({
+    "MN": ProviderStateConfig(
+        live_loader=_load_mn_live_records,
+        live_cache_path=MN_LIVE_CACHE,
+        fallback_csv=DATA_DIR / "mn_providers.csv",
+        enrichment=_enrich_mn_with_parentaware,
+    ),
+    "IL": ProviderStateConfig(
+        live_loader=_load_il_live_records,
+        live_cache_path=IL_LIVE_CACHE,
+        fallback_csv=DATA_DIR / "il_providers.csv",
+        enrichment=None,
+    ),
+})

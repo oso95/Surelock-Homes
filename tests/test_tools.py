@@ -23,8 +23,8 @@ def test_search_childcare_online_no_fixtures(monkeypatch):
     def _fail_il():
         raise ConnectionError("site unreachable")
 
-    monkeypatch.setattr(providers, "_load_mn_live_records", _fail_mn)
-    monkeypatch.setattr(providers, "_load_il_live_records", _fail_il)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["MN"], "live_loader", _fail_mn)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["IL"], "live_loader", _fail_il)
 
     # Ensure no stale cache exists for this test
     monkeypatch.setattr(providers, "_load_stale_cache", lambda state_key: [])
@@ -254,8 +254,8 @@ def test_licensing_uses_stale_cache_on_live_failure(monkeypatch):
     def _fail_il():
         raise ConnectionError("DCFS unreachable")
 
-    # Must patch in both modules since licensing imports directly
-    monkeypatch.setattr(providers, "_load_il_live_records", _fail_il)
+    # Patch both: registry for providers, module-level name for licensing (direct import)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["IL"], "live_loader", _fail_il)
     monkeypatch.setattr(licensing, "_load_il_live_records", _fail_il)
 
     stale_records = [
@@ -300,8 +300,8 @@ def test_zip_plus4_matches_base_zip(monkeypatch):
          "capacity": 30, "license_type": "CC", "status": "Active", "state": "MN"},
     ]
 
-    monkeypatch.setattr(providers, "_load_mn_live_records", lambda: records)
-    monkeypatch.setattr(providers, "_enrich_mn_with_parentaware", lambda p: p)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["MN"], "live_loader", lambda: records)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["MN"], "enrichment", lambda p: p)
 
     results = search_childcare_providers(state="MN", zip="55454", radius_miles=5, offline=False)
     names = {r["name"] for r in results}
@@ -323,7 +323,7 @@ def test_radius_expanded_zip_prefix(monkeypatch):
          "capacity": 30, "license_type": "CC", "status": "Active", "state": "IL"},
     ]
 
-    monkeypatch.setattr(providers, "_load_il_live_records", lambda: records)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["IL"], "live_loader", lambda: records)
 
     # Radius 5: exact ZIP only
     exact = search_childcare_providers(state="IL", zip="60623", radius_miles=5, offline=False)
@@ -383,7 +383,7 @@ def test_mn_provider_enrichment_parentaware(monkeypatch):
     def mock_load_mn():
         return fake_mn_records
 
-    monkeypatch.setattr(providers, "_load_mn_live_records", mock_load_mn)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["MN"], "live_loader", mock_load_mn)
 
     def mock_parentaware(name):
         return [
@@ -456,7 +456,7 @@ def test_mn_enrichment_failure_graceful(monkeypatch):
     def mock_load_mn():
         return fake_mn_records
 
-    monkeypatch.setattr(providers, "_load_mn_live_records", mock_load_mn)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["MN"], "live_loader", mock_load_mn)
 
     def mock_parentaware_timeout(name):
         raise req_lib.exceptions.Timeout("ParentAware timed out")
@@ -490,7 +490,7 @@ def test_mn_enrichment_address_fallback(monkeypatch):
     def mock_load_mn():
         return fake_mn_records
 
-    monkeypatch.setattr(providers, "_load_mn_live_records", mock_load_mn)
+    monkeypatch.setattr(providers.PROVIDER_REGISTRY["MN"], "live_loader", mock_load_mn)
 
     # Return multiple results (chain provider) — only one matches the address
     def mock_parentaware(name):
@@ -665,3 +665,38 @@ def test_nudge_shows_progress_with_low_coverage():
     assert "1 out of 50" in nudge
     assert "20 turns remaining" in nudge
     assert "report will be generated automatically" in nudge
+
+
+# ── Registry-based plugin architecture tests ──
+
+
+def test_definitions_enum_matches_registries():
+    """Tool schema enums should be auto-generated from the registries."""
+    from tools.definitions import get_tool_definitions
+    from tools.providers import PROVIDER_REGISTRY
+    from tools.licensing import LICENSING_REGISTRY
+    from tools.capacity import CAPACITY_REGISTRY
+
+    defs = {d["name"]: d for d in get_tool_definitions()}
+
+    provider_enum = defs["search_childcare_providers"]["input_schema"]["properties"]["state"]["enum"]
+    assert provider_enum == sorted(PROVIDER_REGISTRY.keys())
+
+    licensing_enum = defs["check_licensing_status"]["input_schema"]["properties"]["state"]["enum"]
+    assert licensing_enum == sorted(LICENSING_REGISTRY.keys())
+
+    capacity_enum = defs["calculate_max_capacity"]["input_schema"]["properties"]["state"]["enum"]
+    assert capacity_enum == sorted(CAPACITY_REGISTRY.keys())
+
+
+def test_unsupported_state_returns_empty():
+    """search_childcare_providers with unsupported state returns empty list."""
+    results = search_childcare_providers(state="XX")
+    assert results == []
+
+
+def test_capacity_unsupported_state_raises():
+    """calculate_max_capacity with unsupported state raises ValueError."""
+    import pytest
+    with pytest.raises(ValueError):
+        calculate_max_capacity(1000, state="XX")
