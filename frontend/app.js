@@ -915,7 +915,7 @@ function _compactPayloadForStorage(payload) {
   if (Array.isArray(compact.raw_turns)) {
     compact.raw_turns = compact.raw_turns.map(turn => ({
       turn: turn.turn,
-      assistant: typeof turn.assistant === "string" ? turn.assistant.slice(0, 500) : "",
+      assistant: typeof turn.assistant === "string" ? turn.assistant : "",
       provider: turn.provider,
       flagged: turn.flagged,
       tool_results: Array.isArray(turn.tool_results)
