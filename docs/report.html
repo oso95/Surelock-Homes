@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Surelock Homes | Report</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body data-page="report">
+    <header class="header" role="banner">
+      <div class="header__inner">
+        <div>
+          <h1 class="header__title"><a href="index.html">Surelock Homes</a></h1>
+          <span class="header__tagline">Investigation Reports</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <a href="index.html" class="back-link">&larr; All Runs</a>
+
+      <!-- Loading -->
+      <div id="loadingState" class="loading-state">
+        <div class="loading-spinner"></div>
+        <p>Loading report&hellip;</p>
+      </div>
+
+      <!-- Error -->
+      <p id="errorState" class="placeholder" hidden></p>
+
+      <!-- Report content (hidden until loaded) -->
+      <div id="reportContent" class="results-stack" hidden>
+        <!-- Query & timestamp -->
+        <div>
+          <h2 id="reportQuery" class="query-display"></h2>
+          <p id="reportTimestamp" class="timestamp-display"></p>
+        </div>
+
+        <!-- KPI Strip -->
+        <section class="section section--summary" aria-label="Run summary">
+          <div class="kpi-strip">
+            <div class="kpi">
+              <span class="kpi__label">Mode</span>
+              <strong class="kpi__value" id="metricMode">-</strong>
+            </div>
+            <div class="kpi">
+              <span class="kpi__label">Providers</span>
+              <strong class="kpi__value" id="metricProviders">-</strong>
+            </div>
+            <div class="kpi kpi--flags">
+              <span class="kpi__label">Flags</span>
+              <strong class="kpi__value" id="metricFlags">-</strong>
+            </div>
+            <div class="kpi">
+              <span class="kpi__label">Turns</span>
+              <strong class="kpi__value" id="metricTurns">-</strong>
+            </div>
+          </div>
+        </section>
+
+        <!-- Flags Alert Banner -->
+        <section id="flagsAlert" class="flags-alert" hidden aria-label="Flags alert">
+          <span class="flags-alert__icon">&#9888;</span>
+          <span id="flagsAlertText" class="flags-alert__text"></span>
+        </section>
+
+        <!-- Tab Bar -->
+        <div class="tab-bar" role="tablist" aria-label="Report view">
+          <button id="tabBtnReport" class="tab-btn tab-btn--active" type="button" role="tab" aria-selected="true">Report</button>
+          <button id="tabBtnNarration" class="tab-btn" type="button" role="tab" aria-selected="false">Investigation Log</button>
+        </div>
+
+        <!-- Tab: Report -->
+        <div id="tabReport" class="tab-panel" role="tabpanel">
+          <section class="section section--analysis" aria-label="AI analysis">
+            <div class="section__header">
+              <h2 class="section__title">AI Analysis</h2>
+              <span id="narrativeWordCount" class="word-count"></span>
+            </div>
+            <div id="narrativeContent" class="prose">
+              <p class="placeholder">No analysis available.</p>
+            </div>
+          </section>
+
+          <section class="section section--flags" aria-label="Flagged providers">
+            <div class="section__header">
+              <h2 class="section__title">Flagged Providers</h2>
+            </div>
+            <div id="flagsList" class="card-grid">
+              <p class="placeholder">No flags were raised.</p>
+            </div>
+          </section>
+        </div>
+
+        <!-- Tab: Investigation Log -->
+        <div id="tabNarration" class="tab-panel" role="tabpanel" hidden>
+          <section class="section section--analysis" aria-label="Investigation log">
+            <div class="section__header">
+              <h2 class="section__title">Investigation Log</h2>
+              <span id="narrationWordCount" class="word-count"></span>
+            </div>
+            <div id="narrationContent" class="prose">
+              <p class="placeholder">No investigation log available.</p>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <a href="https://github.com/cyw/Surelock-Homes">Surelock Homes</a> &mdash; Fraud Detection Research
+    </footer>
+
+    <script src="js/app.js"></script>
+  </body>
+</html>
