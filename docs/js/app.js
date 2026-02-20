@@ -203,18 +203,24 @@ function initIndex() {
         card.className = "run-card";
         card.href = `report.html?run=${encodeURIComponent(run.id)}`;
 
-        const flagsHtml = run.flags > 0
-          ? `<span class="run-card__stat run-card__flags">${run.flags} flag${run.flags !== 1 ? "s" : ""}</span>`
-          : `<span class="run-card__stat">No flags</span>`;
+        const flagsBadge = run.flags > 0
+          ? `<span class="case-badge case-badge--flags">${run.flags} flag${run.flags !== 1 ? "s" : ""}</span>`
+          : `<span class="case-badge case-badge--clear">Clear</span>`;
+
+        const modeBadge = `<span class="case-badge case-badge--mode">${escapeHtml(run.mode === "agent" ? "Live" : "Offline")}</span>`;
 
         card.innerHTML = `
-          <p class="run-card__query">${escapeHtml(run.query)}</p>
-          <div class="run-card__meta">
-            <span class="run-card__stat">${escapeHtml(run.timestamp)}</span>
-            <span class="run-card__stat">${escapeHtml(run.mode)}</span>
-            <span class="run-card__stat">${run.provider_count} providers</span>
-            <span class="run-card__stat">${run.turns} turns</span>
-            ${flagsHtml}
+          <div class="run-card__body">
+            <p class="run-card__query">${escapeHtml(run.query)}</p>
+            <div class="run-card__meta">
+              <span class="run-card__stat">${escapeHtml(run.timestamp)}</span>
+              <span class="run-card__stat">${run.provider_count} providers</span>
+              <span class="run-card__stat">${run.turns} turns</span>
+            </div>
+          </div>
+          <div class="run-card__badge" style="display:flex;gap:0.35rem;flex-direction:column;align-items:flex-end">
+            ${modeBadge}
+            ${flagsBadge}
           </div>
         `;
         grid.appendChild(card);
