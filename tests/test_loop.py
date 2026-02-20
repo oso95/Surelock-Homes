@@ -4,9 +4,12 @@ from unittest.mock import MagicMock
 import agent.loop as loop_mod
 from agent.loop import run_investigation
 from agent.loop import _coerce_tool_payload
+from agent.loop import _ensure_report_text
 from agent.loop import _extract_inline_report
 from agent.loop import _extract_metrics
 from agent.loop import _extract_text
+from agent.loop import _looks_like_final_report
+from agent.loop import _normalize_report_output
 
 
 def test_offline_investigation_returns_payload():
@@ -87,6 +90,73 @@ def test_extract_text_handles_structured_content():
     assert _extract_text(content) == "First chunk\nSecond chunk"
 
 
+def test_looks_like_final_report_requires_report_structure():
+    good = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n...\n"
+        "## 2. PROVIDER DOSSIERS\n...\n"
+        "## 3. PATTERN ANALYSIS\n...\n"
+        "## 4. CONFIDENCE CALIBRATION\n..."
+    )
+    bad = "To begin this investigation, I need to understand the landscape first."
+    assert _looks_like_final_report(good) is True
+    assert _looks_like_final_report(bad) is False
+
+
+def test_normalize_report_output_strips_prompt_echo_preamble():
+    raw = (
+        "Do NOT use introductory text. Just write the report.\n"
+        "Write the final report. Do NOT use any tools.\n"
+        "Start the output immediately with:\n"
+        "\"\n"
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "Body."
+    )
+    out = _normalize_report_output(raw)
+    assert out.startswith("# SURELOCK HOMES INVESTIGATION REPORT")
+    assert "Do NOT use introductory text" not in out
+
+
+def test_ensure_report_text_synthesizes_when_missing():
+    tool_calls = [
+        {
+            "tool": "search_childcare_providers",
+            "arguments": {},
+            "status": "ok",
+            "result": [
+                {"name": "Provider A", "address": "100 Main St", "capacity": 80},
+            ],
+        },
+        {
+            "tool": "get_property_data",
+            "arguments": {"address": "100 Main St"},
+            "status": "ok",
+            "result": {"building_sqft": 1200},
+        },
+        {
+            "tool": "calculate_max_capacity",
+            "arguments": {"building_sqft": 1200},
+            "status": "ok",
+            "result": {"max_legal_capacity": 22},
+        },
+    ]
+    raw_turns = [{"turn": 1, "assistant": "Investigating providers...", "tool_results": []}]
+
+    report = _ensure_report_text(
+        mode="agent",
+        query="Investigate Illinois providers in ZIP 60612",
+        report_text="",
+        assistant_text=["Investigating providers..."],
+        raw_turns=raw_turns,
+        tool_calls=tool_calls,
+    )
+
+    assert "SURELOCK HOMES INVESTIGATION REPORT" in report
+    assert "INVESTIGATION NARRATIVE" in report
+    assert "PROVIDER DOSSIERS" in report
+
+
 def _make_mock_response(content, tool_calls=None, finish_reason="stop"):
     """Build a MagicMock that mimics an OpenAI ChatCompletion response."""
     message = MagicMock()
@@ -101,6 +171,21 @@ def _make_mock_response(content, tool_calls=None, finish_reason="stop"):
 
 
 def test_openrouter_investigation_continues_truncated_turn(monkeypatch):
+    final_report = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "Narrative.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "Dossiers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "Patterns.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Estimate.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Recommendations."
+    )
     responses = [
         _make_mock_response(
             content="Chunk A",
@@ -113,7 +198,7 @@ def test_openrouter_investigation_continues_truncated_turn(monkeypatch):
             finish_reason="stop",
         ),
         _make_mock_response(
-            content="Final report text",
+            content=final_report,
             tool_calls=None,
             finish_reason="stop",
         ),
@@ -142,10 +227,25 @@ def test_openrouter_investigation_continues_truncated_turn(monkeypatch):
     )
 
     assert result["raw_turns"][0]["assistant"] == "Chunk A\n\nChunk B"
-    assert result["report_text"] == "Final report text"
+    assert result["report_text"] == final_report
 
 
 def test_openrouter_stream_continues_truncated_turn(monkeypatch):
+    final_report = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "Narrative.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "Dossiers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "Patterns.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Estimate.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Recommendations."
+    )
     responses = [
         _make_mock_response(
             content="Part 1",
@@ -158,7 +258,7 @@ def test_openrouter_stream_continues_truncated_turn(monkeypatch):
             finish_reason="stop",
         ),
         _make_mock_response(
-            content="Report body",
+            content=final_report,
             tool_calls=None,
             finish_reason="stop",
         ),
@@ -191,7 +291,7 @@ def test_openrouter_stream_continues_truncated_turn(monkeypatch):
     complete_event = next(e for e in events if e.get("event") == "complete")
     payload = complete_event["payload"]
     assert payload["raw_turns"][0]["assistant"] == "Part 1\n\nPart 2"
-    assert payload["report_text"] == "Report body"
+    assert payload["report_text"] == final_report
 
 
 # ── _extract_metrics sequence tracking tests ──
@@ -272,3 +372,62 @@ def test_extract_metrics_does_not_overwrite_real_sqft():
     assert len(metrics["flagged"]) == 1
     flag = metrics["flagged"][0]
     assert flag["building_sqft"] == 2000.0  # original sqft, not overwritten
+
+
+def test_extract_metrics_collects_non_physical_anomaly_flags():
+    tool_calls = [
+        {
+            "tool": "search_childcare_providers",
+            "arguments": {},
+            "status": "ok",
+            "result": [
+                {
+                    "name": "Windy City Care",
+                    "address": "606 Southfield St, Chicago, IL 60612",
+                    "capacity": 60,
+                    "license_type": "Group Day Care Home",
+                    "status": "Active",
+                    "state": "IL",
+                },
+                {
+                    "name": "Erie Teamsters",
+                    "address": "1634 W Van Buren St, Chicago, IL 60612",
+                    "capacity": 0,
+                    "license_type": "Day Care Center",
+                    "status": "License issued",
+                    "state": "IL",
+                },
+                {
+                    "name": "iLearn of Grand LLC",
+                    "address": "2200 W Grand Ave, Chicago, IL 60612",
+                    "capacity": 35,
+                    "license_type": "Day Care Center",
+                    "status": "Permit issued",
+                    "state": "IL",
+                },
+                {
+                    "name": "Rose Key",
+                    "address": "3006 W Polk St, Chicago, IL 60612",
+                    "capacity": 7,
+                    "license_type": "Day Care Home",
+                    "status": "Active",
+                    "state": "IL",
+                },
+                {
+                    "name": "Giovonna Johnson",
+                    "address": "3006 W Polk St, Chicago, IL 60612",
+                    "capacity": 7,
+                    "license_type": "Day Care Home",
+                    "status": "Active",
+                    "state": "IL",
+                },
+            ],
+        }
+    ]
+    metrics = _extract_metrics(tool_calls)
+    assert metrics["provider_count"] == 5
+    flag_types = {f.get("flag_type") for f in metrics["flagged"]}
+    assert "license_type_capacity_mismatch" in flag_types
+    assert "zero_capacity_active_license" in flag_types
+    assert "permit_only_provider" in flag_types
+    assert "shared_address_multiple_licenses" in flag_types

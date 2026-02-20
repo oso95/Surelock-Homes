@@ -36,7 +36,7 @@ def test_search_childcare_online_no_fixtures(monkeypatch):
 
 
 def test_property_lookup_matches_dataset():
-    result = get_property_data("100 Birch Ave", state="MN")
+    result = get_property_data("100 Birch Ave", state="MN", offline=True)
     assert result["status"] == "found"
     assert result["building_sqft"] == 1100.0
 
@@ -220,6 +220,65 @@ def test_get_property_data_cook_live_passes_pin(monkeypatch):
     assert result["pin"] == "16272040100000"
     assert result["source_dataset"] == "residential_characteristics"
     assert result["building_sqft"] == 2234.0
+
+
+def test_get_property_data_live_not_found_does_not_use_fixture(monkeypatch):
+    """Online mode should return live not_found, not fixture CSV fallback, on clean no-match."""
+    from tools import property as prop_mod
+
+    monkeypatch.setattr(prop_mod.PROPERTY_REGISTRY["IL"], "live_query", lambda addr: {})
+
+    def _fake_rows(_path):
+        return [
+            {
+                "address": "4129 W Cermak Rd",
+                "building_sqft": "9999",
+                "lot_size": "",
+                "zoning": "",
+                "property_class": "211",
+                "year_built": "1900",
+                "county": "Cook",
+                "state": "IL",
+            }
+        ]
+
+    monkeypatch.setattr(prop_mod, "_read_csv", _fake_rows)
+    result = get_property_data("4129 W Cermak Rd", state="IL", offline=False)
+    assert result["status"] == "not_found"
+    assert result["source"] == "live_cook"
+    assert result.get("live_not_found") is True
+    assert result["building_sqft"] == 0.0
+
+
+def test_get_property_data_live_error_still_uses_fallback(monkeypatch):
+    """If live lookup fails, CSV fallback remains allowed with live_fallback marker."""
+    from tools import property as prop_mod
+
+    def _raise_live(_addr):
+        raise TimeoutError("cook timeout")
+
+    monkeypatch.setattr(prop_mod.PROPERTY_REGISTRY["IL"], "live_query", _raise_live)
+
+    def _fake_rows(_path):
+        return [
+            {
+                "address": "4129 W Cermak Rd",
+                "building_sqft": "1500",
+                "lot_size": "3000",
+                "zoning": "",
+                "property_class": "211",
+                "year_built": "1900",
+                "county": "Cook",
+                "state": "IL",
+            }
+        ]
+
+    monkeypatch.setattr(prop_mod, "_read_csv", _fake_rows)
+    result = get_property_data("4129 W Cermak Rd", state="IL", offline=False)
+    assert result["status"] == "found"
+    assert result["source"].endswith(".fallback")
+    assert result.get("live_fallback") is True
+    assert "timeout" in result.get("live_error", "")
 
 
 # ── Business registration tests ──

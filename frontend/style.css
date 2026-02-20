@@ -41,7 +41,6 @@
   --green: #1a7a3a;
   --amber: #c8922a;
 
-  --flag-bg: #fdf0ef;
   --tool-bg: #f3f0fa;
   --narrative-bg: #fffef9;
   --thinking-bg: #eef8f0;
@@ -573,30 +572,12 @@ h3 { font-size: 1.05rem; }
   background: linear-gradient(135deg, #fdfaef 0%, var(--analysis-bg) 100%);
 }
 
-.section--flags { border-left-color: var(--red); }
 .section--narration { border-left-color: var(--blue); background: #eff6ff; }
 .section--thinking { border-left-color: var(--green); background: var(--thinking-bg); }
 .section--analysis-notes { border-left-color: var(--amber); background: #fffbeb; }
 .section--timeline { border-left-color: var(--blue); background: var(--timeline-bg); }
 .section--tools { border-left-color: var(--purple); }
 .section--raw { border-left-color: #64748b; }
-
-/* --- Flags Alert Banner --- */
-.flags-alert {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  background: var(--flag-bg);
-  border: 1px solid #fecaca;
-  border-left: 4px solid var(--red);
-  border-radius: var(--radius);
-  padding: 0.75rem 1rem;
-  color: #991b1b;
-  font-weight: 600;
-  font-size: 0.95rem;
-}
-
-.flags-alert__icon { font-size: 1.2rem; }
 
 /* --- Tab bar --- */
 .tab-bar {
@@ -645,7 +626,7 @@ h3 { font-size: 1.05rem; }
 /* --- KPI strip --- */
 .kpi-strip {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 0.6rem;
 }
 
@@ -681,9 +662,6 @@ h3 { font-size: 1.05rem; }
   color: var(--text);
 }
 
-.kpi--flags.kpi--alert { background: var(--flag-bg); border-color: var(--red); }
-.kpi--flags.kpi--alert .kpi__value { color: var(--red); }
-
 /* --- Word count --- */
 .word-count {
   font-size: 0.75rem;
@@ -711,48 +689,6 @@ h3 { font-size: 1.05rem; }
 /* --- Card grid --- */
 .card-grid { display: grid; gap: 0.75rem; }
 .placeholder { color: var(--text-muted); font-style: italic; }
-
-/* --- Flag cards --- */
-.flag-card {
-  background: var(--flag-bg);
-  border: 1px solid #fecaca;
-  border-radius: var(--radius);
-  padding: 0.85rem 1rem;
-}
-
-.flag-card__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-.flag-card__header h4 { margin: 0; font-size: 0.95rem; }
-
-.flag-card__flagged {
-  background: var(--red);
-  color: #fff;
-  font-size: 0.68rem;
-  font-weight: 700;
-  padding: 0.15rem 0.5rem;
-  border-radius: 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  flex-shrink: 0;
-}
-
-.flag-card__meta {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.25rem 1rem;
-  font-size: 0.88rem;
-  color: var(--text-muted);
-  margin-bottom: 0.5rem;
-}
-.flag-card__meta dt { font-weight: 600; color: var(--text); }
-.flag-card__meta dd { margin: 0; }
-
-.flag-card details summary { font-size: 0.85rem; cursor: pointer; color: var(--text-muted); }
 
 /* --- Tool cards --- */
 .tool-card {
@@ -1118,11 +1054,6 @@ details summary { cursor: pointer; font-weight: 700; font-size: 0.9rem; }
   white-space: nowrap;
 }
 
-.history-item__flags {
-  color: var(--red);
-  font-weight: 700;
-}
-
 .history-item__time {
   font-size: 0.7rem;
   color: #475569;
@@ -1182,13 +1113,6 @@ details summary { cursor: pointer; font-weight: 700; font-size: 0.9rem; }
 .tab-panel > .section:nth-child(4) { animation-delay: 0.24s; }
 .tab-panel > .section:nth-child(5) { animation-delay: 0.32s; }
 
-.flag-card { animation: slideInLeft 0.3s ease-out both; }
-.flag-card:nth-child(1) { animation-delay: 0.05s; }
-.flag-card:nth-child(2) { animation-delay: 0.1s; }
-.flag-card:nth-child(3) { animation-delay: 0.15s; }
-.flag-card:nth-child(4) { animation-delay: 0.2s; }
-.flag-card:nth-child(5) { animation-delay: 0.25s; }
-
 /* ==========================================================================
    8. Focus & Accessibility
    ========================================================================== */
@@ -1213,7 +1137,6 @@ details summary { cursor: pointer; font-weight: 700; font-size: 0.9rem; }
 
 @media (max-width: 768px) {
   .kpi-strip { grid-template-columns: repeat(2, 1fr); }
-  .flag-card__meta { grid-template-columns: 1fr; }
   .header__inner { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
 }
 

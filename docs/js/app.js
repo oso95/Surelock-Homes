@@ -203,10 +203,6 @@ function initIndex() {
         card.className = "run-card";
         card.href = `report.html?run=${encodeURIComponent(run.id)}`;
 
-        const flagsBadge = run.flags > 0
-          ? `<span class="case-badge case-badge--flags">${run.flags} flag${run.flags !== 1 ? "s" : ""}</span>`
-          : `<span class="case-badge case-badge--clear">Clear</span>`;
-
         const modeBadge = `<span class="case-badge case-badge--mode">${escapeHtml(run.mode === "agent" ? "Live" : "Offline")}</span>`;
 
         card.innerHTML = `
@@ -220,7 +216,6 @@ function initIndex() {
           </div>
           <div class="run-card__badge" style="display:flex;gap:0.35rem;flex-direction:column;align-items:flex-end">
             ${modeBadge}
-            ${flagsBadge}
           </div>
         `;
         grid.appendChild(card);
@@ -278,22 +273,6 @@ function renderReport(data) {
   document.getElementById("metricProviders").textContent = String(data.provider_count ?? 0);
   document.getElementById("metricTurns").textContent = String(data.turns ?? 0);
 
-  const flags = Array.isArray(data.flagged) ? data.flagged.length : 0;
-  const metricFlags = document.getElementById("metricFlags");
-  metricFlags.textContent = String(flags);
-  const flagsKpi = metricFlags.closest(".kpi");
-  if (flagsKpi) {
-    flagsKpi.classList.toggle("kpi--alert", flags > 0);
-  }
-
-  // Flags alert banner
-  const flagsAlert = document.getElementById("flagsAlert");
-  if (flags > 0) {
-    flagsAlert.hidden = false;
-    document.getElementById("flagsAlertText").textContent =
-      `${flags} provider${flags > 1 ? "s" : ""} flagged with potential anomalies`;
-  }
-
   // Report tab: render report_text as markdown
   const reportContent = document.getElementById("narrativeContent");
   const reportText = data.report_text || "";
@@ -316,58 +295,8 @@ function renderReport(data) {
     narrationContent.innerHTML = '<p class="placeholder">No investigation log available.</p>';
   }
 
-  // Flagged providers cards
-  renderFlagCards(data.flagged || []);
-
   // Tab switching
   initTabs();
-}
-
-function renderFlagCards(flagged) {
-  const container = document.getElementById("flagsList");
-
-  if (!Array.isArray(flagged) || flagged.length === 0) {
-    container.innerHTML = '<p class="placeholder">No flags were raised for this run.</p>';
-    return;
-  }
-
-  container.innerHTML = "";
-  flagged.forEach((flag, index) => {
-    const card = document.createElement("article");
-    card.className = "flag-card";
-
-    const provider = flag.provider || flag;
-    const name = provider.name || provider.provider_name || provider.provider || `Flag ${index + 1}`;
-    const addr = provider.address || provider.location || "Address not available";
-    const maxLegal = flag.max_legal_capacity ?? flag.legal_max_capacity ?? "N/A";
-    const licensed = flag.licensed_capacity ?? "N/A";
-    const excess = flag.excess_capacity ??
-      (Number.isFinite(Number(licensed)) && Number.isFinite(Number(maxLegal))
-        ? Math.max(0, Number(licensed) - Number(maxLegal))
-        : "N/A");
-    const city = provider.city || "";
-    const zip = provider.zip || "";
-    const state = provider.state || "unknown";
-    const fullAddr = [addr, city, state, zip].filter(Boolean).join(", ");
-
-    card.innerHTML = `
-      <div class="flag-card__header">
-        <h4>${escapeHtml(index + 1)}. ${escapeHtml(name)}</h4>
-        <span class="flag-card__flagged">Flagged</span>
-      </div>
-      <dl class="flag-card__meta">
-        <dt>Address</dt><dd>${escapeHtml(fullAddr)}</dd>
-        <dt>Licensed</dt><dd>${escapeHtml(licensed)}</dd>
-        <dt>Max legal</dt><dd>${escapeHtml(maxLegal)}</dd>
-        <dt>Excess</dt><dd>${escapeHtml(excess)}</dd>
-      </dl>
-      <details>
-        <summary>Full record</summary>
-        <pre class="code-block">${escapeHtml(formatCode(flag))}</pre>
-      </details>
-    `;
-    container.appendChild(card);
-  });
 }
 
 function initTabs() {

@@ -579,8 +579,6 @@ def get_property_data(
     config = PROPERTY_REGISTRY.get(state_key)
 
     if not offline and config is not None:
-        live_status = None
-        live_error: str | None = None
         try:
             live = config.live_query(address)
             if live:
@@ -602,16 +600,29 @@ def get_property_data(
                     if live.get(extra):
                         result[extra] = live[extra]
                 return result
+            # Important: in online mode, a clean live "no match" should not
+            # silently fall through to fixture CSVs.
+            return {
+                "status": "not_found",
+                "source": config.source_label,
+                "address": address,
+                "building_sqft": 0.0,
+                "lot_size": "",
+                "zoning": "",
+                "property_class": "",
+                "year_built": 0,
+                "county": county or config.default_county,
+                "state": state_key,
+                "error": "no parcel match in live county dataset",
+                "live_not_found": True,
+            }
         except Exception as exc:
-            live_status = "failed"
-            live_error = str(exc)
             logger.warning("Live %s query failed for %s: %s", config.default_county, address, exc, exc_info=True)
-        if live_status:
             return _fallback_property_result(
                 address=address,
                 state_key=state_key,
                 county=county,
-                live_error=live_error,
+                live_error=str(exc),
             )
 
     # Fallback to CSV datasets

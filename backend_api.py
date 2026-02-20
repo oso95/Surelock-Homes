@@ -17,6 +17,8 @@ from agent.loop import run_investigation, run_investigation_stream
 from config import FRONTEND_DIR, load_settings
 from tools.definitions import get_tool_definitions
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
 app = FastAPI(title="Surelock Homes API")
 logger = logging.getLogger(__name__)
 
@@ -116,6 +118,7 @@ def _sse_generator(
     max_turns: int,
     offline: bool = False,
 ) -> Generator[str, None, None]:
+    logger.info("SSE generator started: query=%r, max_turns=%d, offline=%s", query[:80], max_turns, offline)
     try:
         for event in run_investigation_stream(query, max_turns=max_turns, offline=offline):
             yield f"data: {json.dumps(event, default=str)}\n\n"

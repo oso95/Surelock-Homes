@@ -19,12 +19,7 @@ const resultsContainer = document.getElementById("resultsContainer");
 
 const metricMode = document.getElementById("metricMode");
 const metricProviders = document.getElementById("metricProviders");
-const metricFlags = document.getElementById("metricFlags");
 const metricTurns = document.getElementById("metricTurns");
-const flagsAlert = document.getElementById("flagsAlert");
-const flagsAlertText = document.getElementById("flagsAlertText");
-const flagBadge = document.getElementById("flagBadge");
-const flagsList = document.getElementById("flagsList");
 const thinkingList = document.getElementById("thinkingList");
 const thinkingBadge = document.getElementById("thinkingBadge");
 const thinkingAnalysisList = document.getElementById("thinkingAnalysisList");
@@ -279,64 +274,34 @@ function setStatusText(message, isError = false) {
    ========================================================================== */
 
 function renderMetrics(payload) {
-  const flags = Array.isArray(payload.flagged) ? payload.flagged.length : 0;
   metricMode.textContent = payload.mode === "agent" ? "Agent (Live)" : (payload.mode || "Offline");
   metricProviders.textContent = String(payload.provider_count ?? 0);
-  metricFlags.textContent = String(flags);
   metricTurns.textContent = String(payload.turns ?? 0);
-
-  const flagsKpi = metricFlags.closest(".kpi");
-  if (flagsKpi) {
-    flagsKpi.classList.toggle("kpi--alert", flags > 0);
-  }
-
-  // Flags alert banner
-  if (flags > 0) {
-    flagsAlert.hidden = false;
-    flagsAlertText.textContent = `${flags} provider${flags > 1 ? "s" : ""} flagged with potential anomalies`;
-  } else {
-    flagsAlert.hidden = true;
-  }
-
-  flagBadge.textContent = flags > 0 ? `${flags} flagged` : "No flags";
-  flagBadge.className = "badge " + (flags > 0 ? "badge--red" : "badge--neutral");
 }
 
 function renderNarrative(payload) {
-  // Prefer report_text (the dedicated final report) over assistant_text
-  // (which includes investigation narration mixed in).
-  const reportText = payload.report_text || "";
-  const assistantText = payload.assistant_text || "";
-  const narration = payload.narration || "";
-
-  let content = "";
-  if (reportText.trim().length > 0) {
-    content = reportText;
-  } else if (assistantText.trim().length > 0) {
-    content = assistantText;
-  } else if (narration.trim().length > 0) {
-    content = narration;
-  }
-
-  if (!content.trim()) {
-    narrativeContent.innerHTML = '<p class="placeholder">No analysis available.</p>';
+  const reportText = (payload.report_text || "").trim();
+  if (!reportText) {
+    narrativeContent.innerHTML = '<p class="placeholder">Final report not available for this run. See Investigation tab for turn-by-turn narration.</p>';
     narrativeWordCount.textContent = "";
     return;
   }
 
-  narrativeContent.innerHTML = renderMarkdown(content);
-  const wordCount = content.split(/\s+/).filter(Boolean).length;
+  narrativeContent.innerHTML = renderMarkdown(reportText);
+  const wordCount = reportText.split(/\s+/).filter(Boolean).length;
   narrativeWordCount.textContent = `${wordCount} words`;
 }
 
 function renderInvestigationNarration(payload) {
   const rawTurns = Array.isArray(payload.raw_turns) ? payload.raw_turns : [];
+  const reportText = (payload.report_text || "").trim();
 
   // Collect per-turn narration (exclude the final report turn which has no tool_results)
   const turns = [];
   rawTurns.forEach((turn) => {
     const text = (turn.assistant || "").trim();
     if (!text) return;
+    if (reportText && text === reportText) return;
     const tools = Array.isArray(turn.tool_results)
       ? turn.tool_results.map(tr => tr.tool).join(", ")
       : Array.isArray(turn.tools)
@@ -370,6 +335,7 @@ function renderThinking(payload) {
   // Build thinking from raw_turns (per-turn assistant reasoning) when the
   // thinking array only contains tool markers (OpenRouter mode).  For
   // Anthropic mode the thinking array has actual extended-thinking content.
+  const reportText = (payload.report_text || "").trim();
   const rawThinking = Array.isArray(payload.thinking) ? payload.thinking : [];
   const hasRealThinking = rawThinking.length > 0 && rawThinking.some(t => !String(t).startsWith("tool:"));
 
@@ -381,6 +347,7 @@ function renderThinking(payload) {
     payload.raw_turns.forEach((turn) => {
       const text = (turn.assistant || "").trim();
       if (!text) return;
+      if (reportText && text === reportText) return;
       const tools = Array.isArray(turn.tool_results)
         ? turn.tool_results.map(tr => tr.tool).join(", ")
         : Array.isArray(turn.tools)
@@ -483,57 +450,6 @@ function renderThinkingAnalysis(payload) {
   `;
 }
 
-function buildFlagCard(flag, index) {
-  const card = document.createElement("article");
-  card.className = "flag-card";
-
-  const provider = flag.provider || flag;
-  const name = provider.name || provider.provider_name || provider.provider || `Flag ${index + 1}`;
-  const addr = provider.address || provider.location || "Address not available";
-  const maxLegal = flag.max_legal_capacity ?? flag.legal_max_capacity ?? "N/A";
-  const licensed = flag.licensed_capacity ?? "N/A";
-  const excess = flag.excess_capacity ??
-    (Number.isFinite(Number(licensed)) && Number.isFinite(Number(maxLegal))
-      ? Math.max(0, Number(licensed) - Number(maxLegal))
-      : "N/A");
-  const city = provider.city || "";
-  const zip = provider.zip || "";
-  const state = provider.state || "unknown";
-  const source = provider.source || "local";
-  const fullAddr = [addr, city, state, zip].filter(Boolean).join(", ");
-
-  card.innerHTML = `
-    <div class="flag-card__header">
-      <h4>${escapeHtml(index + 1)}. ${escapeHtml(name)}</h4>
-      <span class="flag-card__flagged">Flagged</span>
-    </div>
-    <dl class="flag-card__meta">
-      <dt>Address</dt><dd>${escapeHtml(fullAddr)}</dd>
-      <dt>Licensed</dt><dd>${escapeHtml(licensed)}</dd>
-      <dt>Max legal</dt><dd>${escapeHtml(maxLegal)}</dd>
-      <dt>Excess</dt><dd>${escapeHtml(excess)}</dd>
-      <dt>Source</dt><dd>${escapeHtml(source)}</dd>
-    </dl>
-    <details>
-      <summary>Full record</summary>
-      <pre class="code-block">${escapeHtml(formatCode(flag))}</pre>
-    </details>
-  `;
-  return card;
-}
-
-function renderFlags(flags) {
-  if (!Array.isArray(flags) || flags.length === 0) {
-    flagsList.innerHTML = '<p class="placeholder">No flags were raised for this run.</p>';
-    return;
-  }
-
-  flagsList.innerHTML = "";
-  flags.forEach((flag, index) => {
-    flagsList.appendChild(buildFlagCard(flag, index));
-  });
-}
-
 function renderToolCalls(toolCalls) {
   const count = Array.isArray(toolCalls) ? toolCalls.length : 0;
   toolCountBadge.textContent = String(count);
@@ -625,12 +541,11 @@ function buildTimelineEvents(payload) {
         const providerName = typeof turn.provider === "string"
           ? turn.provider
           : (turn.provider?.name || turn.provider_name || "Provider");
-        const flagged = turn.flagged ? " [FLAGGED]" : "";
         events.push({
           kind: "provider",
           label: `Turn ${turnNo} - Target`,
-          detail: providerName + flagged,
-          tone: turn.flagged ? "warn" : "neutral",
+          detail: providerName,
+          tone: "neutral",
         });
       }
     });
@@ -687,7 +602,6 @@ function renderPayload(payload) {
   renderInvestigationNarration(payload);
   renderThinking(payload);
   renderThinkingAnalysis(payload);
-  renderFlags(payload.flagged);
   renderToolCalls(payload.tool_calls);
   renderTimeline(payload);
   copyJsonBtn.disabled = false;
@@ -866,11 +780,7 @@ runBtn.addEventListener("click", async () => {
           case "provider_done": {
             const pct = 5 + (event.turn / event.total) * 90;
             setProgress(pct);
-            if (event.flagged) {
-              addActivity("\u{1F6A9}", `  FLAGGED: licensed ${event.licensed} > max legal ${event.max_legal}`, "activity-log__flag");
-            } else {
-              addActivity("\u2705", `  OK`, "activity-log__text--muted");
-            }
+            addActivity("\u2705", "  Provider check completed", "activity-log__text--muted");
             break;
           }
 
@@ -878,7 +788,7 @@ runBtn.addEventListener("click", async () => {
             sawComplete = true;
             setProgress(100);
             loadingStatus.textContent = "Investigation complete";
-            addActivity("\u{1F3C1}", `Done - ${event.payload.flagged?.length || 0} flags found`, "");
+            addActivity("\u{1F3C1}", "Done - investigation complete", "");
             if (event.payload.status === "error") {
               streamError = event.payload.error || "Investigation completed with an error.";
               addActivity("\u26A0\uFE0F", `Error: ${streamError}`, "activity-log__flag");
@@ -988,25 +898,12 @@ function _compactPayloadForStorage(payload) {
       turn: turn.turn,
       assistant: typeof turn.assistant === "string" ? turn.assistant : "",
       provider: turn.provider,
-      flagged: turn.flagged,
       tool_results: Array.isArray(turn.tool_results)
         ? turn.tool_results.map(tr => ({ tool: tr.tool, status: tr.status }))
         : undefined,
       tools: Array.isArray(turn.tools)
         ? turn.tools.map(t => ({ tool: t.tool }))
         : undefined,
-    }));
-  }
-
-  // Keep flagged array but strip nested property_data/places/business_registration detail
-  if (Array.isArray(compact.flagged)) {
-    compact.flagged = compact.flagged.map(f => ({
-      provider: f.provider,
-      licensed_capacity: f.licensed_capacity,
-      max_legal_capacity: f.max_legal_capacity,
-      excess_capacity: f.excess_capacity,
-      building_sqft: f.building_sqft,
-      flags: f.flags,
     }));
   }
   return compact;
@@ -1038,7 +935,6 @@ function saveHistory(entries) {
 
 function addToHistory(query, payload) {
   const entries = loadHistory();
-  const flags = Array.isArray(payload.flagged) ? payload.flagged.length : 0;
   const providers = payload.provider_count ?? 0;
   const mode = payload.mode === "agent" ? "Online" : "Offline";
 
@@ -1046,7 +942,6 @@ function addToHistory(query, payload) {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     query,
     timestamp: Date.now(),
-    flags,
     providers,
     mode,
     payload: _compactPayloadForStorage(payload),
@@ -1099,10 +994,7 @@ function renderHistory() {
     const li = document.createElement("li");
     li.className = "history-item" + (entry.id === activeHistoryId ? " history-item--active" : "");
 
-    const flagsHtml = entry.flags > 0
-      ? `<span class="history-item__flags">${entry.flags} flag${entry.flags > 1 ? "s" : ""}</span>`
-      : "";
-    const metaParts = [entry.mode, `${entry.providers}p`, flagsHtml].filter(Boolean).join(" &middot; ");
+    const metaParts = [entry.mode, `${entry.providers}p`].join(" &middot; ");
 
     li.innerHTML = `
       <span class="history-item__query" title="${escapeHtml(entry.query)}">${escapeHtml(entry.query)}</span>

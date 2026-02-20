@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Tuple
+from typing import Any, Callable, Dict, Generator, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ _LLM_TOOL_PAYLOAD_CHARS = 60000   # must fit 200 providers × ~250 chars each af
 _LLM_MAX_MEDIA_ITEMS = 6          # images, reviews, features — bulky, rarely need all
 _LLM_MAX_LIST_ITEMS = 200         # provider search results — LLM must see all to triage
 _LLM_MAX_CONTINUATIONS = 3
+_LLM_REPORT_TIMEOUT_SECONDS = 180  # report generation needs far more time than tool calls
 _LLM_CONTINUE_PROMPT = (
     "Continue exactly where your previous response ended. "
     "Do not restart and do not repeat text."
@@ -244,12 +245,62 @@ def _normalize_addr(addr: str) -> str:
 
 def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Extract provider_count and flagged list from accumulated tool call results."""
+    def _to_int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None:
+                return default
+            if isinstance(value, (int, float)):
+                return int(value)
+            raw = str(value).replace(",", "").strip()
+            if not raw:
+                return default
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return default
+
+    def _provider_snapshot(provider: Dict[str, Any], fallback_addr: str = "") -> Dict[str, Any]:
+        return {
+            "name": str(provider.get("name", "")).strip(),
+            "address": str(provider.get("address", fallback_addr)).strip() or fallback_addr,
+            "city": str(provider.get("city", "")).strip(),
+            "zip": str(provider.get("zip", "")).strip(),
+            "state": str(provider.get("state", "")).strip().upper(),
+            "source": str(provider.get("source", "")).strip(),
+            "license_type": str(provider.get("license_type", "")).strip(),
+            "status": str(provider.get("status", "")).strip(),
+            "capacity": _to_int(provider.get("capacity", 0), 0),
+        }
+
+    def _activeish_status(status: str) -> bool:
+        s = str(status or "").strip().lower()
+        if not s:
+            return False
+        if s in {"active", "il", "rn", "ip"}:
+            return True
+        return any(token in s for token in ("active", "license issued", "pending renewal", "permit issued"))
+
+    def _is_group_home(license_type: str) -> bool:
+        lt = str(license_type or "").strip().upper()
+        return "GROUP DAY CARE HOME" in lt or lt in {"GDC", "GDCH"}
+
+    def _is_day_care_home(license_type: str) -> bool:
+        lt = str(license_type or "").strip().upper()
+        if _is_group_home(lt):
+            return False
+        return (
+            "DAY CARE HOME" in lt
+            or "FAMILY DAY CARE" in lt
+            or lt in {"DCH", "FDCH"}
+        )
+
     # 1. Provider count: only from the FIRST search call (target area)
     provider_count = 0
     first_search_seen = False
 
     # 2. Build provider capacity from ALL search results (for flag matching)
-    search_providers: Dict[str, Dict[str, Any]] = {}  # normalized_addr -> {name, capacity}
+    search_providers: Dict[str, List[Dict[str, Any]]] = {}  # normalized_addr -> providers
+    dedup_provider_rows: set[tuple[str, str, str]] = set()
+    all_search_rows: List[Dict[str, Any]] = []
 
     # 3. Property data: addr_arg -> sqft
     property_sqft: Dict[str, float] = {}
@@ -276,11 +327,16 @@ def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
                 first_search_seen = True
             for p in result:
                 norm = _normalize_addr(p.get("address", ""))
+                name = str(p.get("name", "")).strip()
+                license_number = str(p.get("license_number", "")).strip()
+                dedup_key = (name.upper(), norm, license_number.upper())
+                if dedup_key in dedup_provider_rows:
+                    continue
+                dedup_provider_rows.add(dedup_key)
+                provider_row = _provider_snapshot(p)
+                all_search_rows.append(provider_row)
                 if norm:
-                    search_providers[norm] = {
-                        "name": p.get("name", ""),
-                        "capacity": int(p.get("capacity", 0) or 0),
-                    }
+                    search_providers.setdefault(norm, []).append(provider_row)
 
         elif tool == "get_property_data" and isinstance(result, dict):
             addr = args.get("address", "")
@@ -307,7 +363,7 @@ def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         elif tool == "check_licensing_status" and isinstance(result, dict):
             if result.get("status") == "found":
-                cap = int(result.get("capacity", 0) or 0)
+                cap = _to_int(result.get("capacity", 0), 0)
                 addr = args.get("address", "")
                 name = args.get("provider_name", "")
                 if cap and (addr or name):
@@ -315,7 +371,31 @@ def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     # Build flags: for each property with a capacity calc, check if licensed > max
     flagged: List[Dict[str, Any]] = []
-    seen_flags: set = set()
+    seen_flags: set[tuple[str, str, str]] = set()
+
+    def _append_flag(
+        *,
+        flag_type: str,
+        provider_name: str,
+        address: str,
+        flag_text: str,
+        provider: Dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        key = (flag_type, _normalize_addr(address), provider_name.strip().upper())
+        if key in seen_flags:
+            return
+        seen_flags.add(key)
+        row: Dict[str, Any] = {
+            "flag_type": flag_type,
+            "provider_name": provider_name or "Unknown",
+            "address": address or "Unknown address",
+            "flag": flag_text,
+        }
+        if provider:
+            row["provider"] = _provider_snapshot(provider, fallback_addr=address)
+        row.update(extra)
+        flagged.append(row)
 
     for addr_arg, sqft in property_sqft.items():
         # Find the max legal capacity for this building's sqft
@@ -331,6 +411,7 @@ def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
         # Find the licensed capacity — try licensing data first, then search results
         licensed_cap = 0
         provider_name = ""
+        provider_row: Dict[str, Any] | None = None
 
         # Try licensing results (keyed by addr_arg or provider_name)
         if addr_arg in licensing_cap:
@@ -341,25 +422,112 @@ def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not licensed_cap:
             norm = _normalize_addr(addr_arg)
             if norm in search_providers:
-                licensed_cap = search_providers[norm]["capacity"]
-                provider_name = search_providers[norm]["name"]
+                provider_row = search_providers[norm][0]
+                licensed_cap = _to_int(provider_row.get("capacity", 0), 0)
+                provider_name = str(provider_row.get("name", ""))
 
         if not provider_name:
             norm = _normalize_addr(addr_arg)
             if norm in search_providers:
-                provider_name = search_providers[norm]["name"]
+                provider_row = search_providers[norm][0]
+                provider_name = str(provider_row.get("name", ""))
 
-        if licensed_cap > max_cap and (provider_name, addr_arg) not in seen_flags:
-            seen_flags.add((provider_name, addr_arg))
-            flagged.append({
-                "provider_name": provider_name or "Unknown",
-                "address": addr_arg,
-                "licensed_capacity": licensed_cap,
-                "max_legal_capacity": max_cap,
-                "excess_capacity": licensed_cap - max_cap,
-                "building_sqft": sqft,
-                "flag": "licensed capacity exceeds physical maximum",
-            })
+        if licensed_cap > max_cap:
+            _append_flag(
+                flag_type="physical_capacity_overage",
+                provider_name=provider_name or "Unknown",
+                address=addr_arg,
+                flag_text="licensed capacity exceeds physical maximum",
+                provider=provider_row,
+                licensed_capacity=licensed_cap,
+                max_legal_capacity=max_cap,
+                excess_capacity=licensed_cap - max_cap,
+                building_sqft=sqft,
+            )
+
+    # Zero-capacity active/pending licenses.
+    for provider in all_search_rows:
+        status = str(provider.get("status", "")).strip()
+        cap = _to_int(provider.get("capacity", 0), 0)
+        if cap != 0 or not _activeish_status(status):
+            continue
+        _append_flag(
+            flag_type="zero_capacity_active_license",
+            provider_name=str(provider.get("name", "")) or "Unknown",
+            address=str(provider.get("address", "")),
+            flag_text="active/pending license has zero recorded capacity",
+            provider=provider,
+            licensed_capacity=0,
+            note=f"status={status or 'unknown'}",
+        )
+
+    # License-type capacity mismatches for home-based license classes.
+    for provider in all_search_rows:
+        license_type = str(provider.get("license_type", ""))
+        cap = _to_int(provider.get("capacity", 0), 0)
+        if cap <= 0:
+            continue
+        if _is_group_home(license_type) and cap > 16:
+            _append_flag(
+                flag_type="license_type_capacity_mismatch",
+                provider_name=str(provider.get("name", "")) or "Unknown",
+                address=str(provider.get("address", "")),
+                flag_text="group day care home capacity exceeds 16-child limit",
+                provider=provider,
+                licensed_capacity=cap,
+                legal_limit=16,
+                excess_capacity=cap - 16,
+            )
+        elif _is_day_care_home(license_type) and cap > 12:
+            _append_flag(
+                flag_type="license_type_capacity_mismatch",
+                provider_name=str(provider.get("name", "")) or "Unknown",
+                address=str(provider.get("address", "")),
+                flag_text="day care home capacity exceeds 12-child limit",
+                provider=provider,
+                licensed_capacity=cap,
+                legal_limit=12,
+                excess_capacity=cap - 12,
+            )
+
+    # Permit-only records should be monitored as pre-operational, not active.
+    for provider in all_search_rows:
+        status = str(provider.get("status", "")).strip().lower()
+        cap = _to_int(provider.get("capacity", 0), 0)
+        if cap <= 0:
+            continue
+        if "permit issued" not in status and status not in {"ip"}:
+            continue
+        _append_flag(
+            flag_type="permit_only_provider",
+            provider_name=str(provider.get("name", "")) or "Unknown",
+            address=str(provider.get("address", "")),
+            flag_text="provider is permit-issued (pre-operational), verify not treated as fully licensed",
+            provider=provider,
+            licensed_capacity=cap,
+        )
+
+    # Multiple providers at the same address.
+    for norm_addr, providers_at_addr in search_providers.items():
+        unique_names = sorted({
+            str(p.get("name", "")).strip()
+            for p in providers_at_addr
+            if str(p.get("name", "")).strip()
+        })
+        if len(unique_names) < 2:
+            continue
+        primary = providers_at_addr[0]
+        total_capacity = sum(_to_int(p.get("capacity", 0), 0) for p in providers_at_addr)
+        _append_flag(
+            flag_type="shared_address_multiple_licenses",
+            provider_name=f"Shared address ({len(unique_names)} providers)",
+            address=str(primary.get("address", norm_addr)),
+            flag_text="multiple providers share this address; verify independent operations",
+            provider=primary,
+            licensed_capacity=total_capacity,
+            provider_count=len(unique_names),
+            provider_names=unique_names,
+        )
 
     return {"provider_count": provider_count, "flagged": flagged}
 
@@ -371,6 +539,31 @@ _REPORT_MARKERS = (
     "PATTERN ANALYSIS",
     "CONFIDENCE CALIBRATION",
     "Investigation complete",
+)
+
+_REPORT_SECTION_MARKERS = (
+    "INVESTIGATION NARRATIVE",
+    "PROVIDER DOSSIERS",
+    "PATTERN ANALYSIS",
+    "CONFIDENCE CALIBRATION",
+    "EXPOSURE ESTIMATE",
+    "RECOMMENDATIONS",
+)
+
+_REPORT_HEADER_PATTERNS = (
+    r"(?im)^#\s+SURELOCK HOMES(?:\s+—\s+|\s+)?(?:FINAL\s+)?INVESTIGATION REPORT\b",
+    r"(?im)^#\s+SURELOCK HOMES\b",
+    r"(?im)^##\s*1\.\s*INVESTIGATION NARRATIVE\b",
+    r"(?im)^1\.\s*INVESTIGATION NARRATIVE\b",
+)
+
+_PROMPT_ECHO_LINE_PATTERNS = (
+    r"(?i)^\s*do\s+not\s+use\s+introductory\s+text.*$",
+    r"(?i)^\s*do\s+not\s+omit\s+any\s+sections.*$",
+    r"(?i)^\s*write\s+the\s+final\s+report.*$",
+    r"(?i)^\s*do\s+not\s+use\s+any\s+tools.*$",
+    r"(?i)^\s*start\s+the\s+output\s+immediately.*$",
+    r"(?i)^\s*begin\s+writing\s+the\s+report.*$",
 )
 
 
@@ -407,6 +600,170 @@ def _extract_inline_report(assistant_text: List[str]) -> str:
         else:
             report_blocks.append(block)
     return "\n".join(report_blocks)
+
+
+def _normalize_report_output(text: str) -> str:
+    body = (text or "").strip()
+    if not body:
+        return ""
+
+    # If the model echoed prompt directives before the report heading, trim to the first report heading.
+    first_heading_at: int | None = None
+    for pattern in _REPORT_HEADER_PATTERNS:
+        match = re.search(pattern, body)
+        if not match:
+            continue
+        pos = match.start()
+        if first_heading_at is None or pos < first_heading_at:
+            first_heading_at = pos
+    if first_heading_at is not None and first_heading_at > 0:
+        body = body[first_heading_at:].lstrip(' \t\n"\'')
+
+    # Defensive cleanup for leading instruction echoes when no heading was found.
+    lines = body.splitlines()
+    while lines:
+        first = lines[0].strip()
+        if not first:
+            lines.pop(0)
+            continue
+        if any(re.match(pattern, first) for pattern in _PROMPT_ECHO_LINE_PATTERNS):
+            lines.pop(0)
+            continue
+        break
+    return "\n".join(lines).strip()
+
+
+def _looks_like_final_report(text: str) -> bool:
+    body = _normalize_report_output(text)
+    if not body:
+        return False
+    upper = body.upper()
+    marker_hits = sum(1 for m in _REPORT_SECTION_MARKERS if m in upper)
+    heading_hits = len(re.findall(r"(?im)^(#{1,3}\s+|[1-6]\.\s+)", body))
+    if marker_hits >= 3:
+        return True
+    return marker_hits >= 2 and heading_hits >= 4
+
+
+def _synthesize_report(
+    *,
+    query: str,
+    raw_turns: List[Dict[str, Any]],
+    tool_calls: List[Dict[str, Any]],
+) -> str:
+    metrics = _extract_metrics(tool_calls)
+    flagged = metrics.get("flagged", []) if isinstance(metrics, dict) else []
+    provider_count = int(metrics.get("provider_count", 0) or 0) if isinstance(metrics, dict) else 0
+    investigation_turns = len(raw_turns)
+
+    exposure_monthly = 0
+    for item in flagged:
+        excess = int(item.get("excess_capacity", 0) or 0)
+        if excess > 0:
+            exposure_monthly += excess * 1100
+    exposure_annual = exposure_monthly * 12
+
+    lines: List[str] = [
+        "# SURELOCK HOMES INVESTIGATION REPORT",
+        "",
+        "## 1. INVESTIGATION NARRATIVE",
+        f"Query: {query}",
+        f"Investigation turns completed: {investigation_turns}.",
+        f"Providers identified in primary search: {provider_count}.",
+        f"Flagged providers from tool evidence: {len(flagged)}.",
+        "This report was synthesized from completed investigation outputs because the model did not return a complete final report block.",
+        "",
+        "## 2. PROVIDER DOSSIERS",
+    ]
+
+    if flagged:
+        for idx, item in enumerate(flagged, start=1):
+            provider = item.get("provider_name") or "Unknown provider"
+            address = item.get("address") or "Unknown address"
+            licensed = item.get("licensed_capacity")
+            max_legal = item.get("max_legal_capacity")
+            excess = item.get("excess_capacity")
+            sqft = item.get("building_sqft")
+            note = item.get("note")
+            flag_text = item.get("flag") or "Potential anomaly."
+            if licensed is not None:
+                licensed = int(licensed or 0)
+            if max_legal is not None:
+                max_legal = int(max_legal or 0)
+            if excess is not None:
+                excess = int(excess or 0)
+            lines.append(f"### {idx}. {provider}")
+            lines.append(f"- Address: {address}")
+            if sqft:
+                lines.append(f"- Building sqft: {sqft}")
+            if licensed is not None:
+                lines.append(f"- Licensed capacity: {licensed}")
+            if max_legal is not None:
+                lines.append(f"- Maximum legal capacity (estimated): {max_legal}")
+            if excess is not None:
+                lines.append(f"- Excess capacity: {excess}")
+            if note:
+                lines.append(f"- Note: {note}")
+            lines.append(f"- Preliminary finding: {flag_text}.")
+            lines.append("")
+    else:
+        lines.append("No structured anomalies were detected from available tool outputs.")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## 3. PATTERN ANALYSIS",
+            "Cross-provider pattern analysis is limited when direct licensing/property confirmations are unavailable or incomplete.",
+            "",
+            "## 4. CONFIDENCE CALIBRATION",
+            "HIGH confidence in direct numerical mismatches (licensed capacity vs computed maximum legal capacity).",
+            "MEDIUM confidence in operational inferences from map/listing signals without direct regulator confirmation.",
+            "",
+            "## 5. EXPOSURE ESTIMATE",
+            f"Estimated monthly exposure (if all excess slots are billed): ${exposure_monthly:,.0f}.",
+            f"Estimated annual exposure: ${exposure_annual:,.0f}.",
+            "This estimate is directional and depends on actual enrollment and billing records.",
+            "",
+            "## 6. RECOMMENDATIONS",
+            "1. Verify flagged providers in official state licensing portals by address and license number.",
+            "2. Run site verification for addresses with major capacity anomalies.",
+            "3. Request regulator-side billing/attendance audits where exposure is material.",
+        ]
+    )
+    return "\n".join(lines).strip()
+
+
+def _ensure_report_text(
+    *,
+    mode: str,
+    query: str,
+    report_text: str,
+    assistant_text: List[str],
+    raw_turns: List[Dict[str, Any]],
+    tool_calls: List[Dict[str, Any]],
+) -> str:
+    text = _normalize_report_output(report_text or "")
+    if mode != "agent":
+        return text
+
+    if _looks_like_final_report(text):
+        return text
+
+    inline = _normalize_report_output(_extract_inline_report(assistant_text))
+    if _looks_like_final_report(inline):
+        return inline
+
+    turns_inline = _normalize_report_output(_extract_inline_report(
+        [str(turn.get("assistant", "")).strip() for turn in raw_turns if str(turn.get("assistant", "")).strip()]
+    ))
+    if _looks_like_final_report(turns_inline):
+        return turns_inline
+
+    if text:
+        logger.warning("Report text looked incomplete; using synthesized fallback report.")
+    else:
+        logger.warning("Report text missing; using synthesized fallback report.")
+    return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls)
 
 
 def _continuation_nudge(
@@ -572,16 +929,102 @@ def _build_image_message(sv_results: List[Dict[str, Any]]) -> Dict[str, Any] | N
 
 
 _REPORT_GENERATION_PROMPT = (
-    "Your investigation turns are now complete. Write the final investigation report.\n\n"
-    "Based on ALL the data you collected during the investigation, write a comprehensive report with:\n"
-    "1. INVESTIGATION NARRATIVE — the full story of what was examined and found\n"
-    "2. PROVIDER DOSSIERS — detailed write-up for each flagged provider\n"
-    "3. PATTERN ANALYSIS — cross-provider patterns discovered\n"
-    "4. CONFIDENCE CALIBRATION — what you're confident about vs uncertain\n"
-    "5. EXPOSURE ESTIMATE — using CCAP rates\n"
-    "6. RECOMMENDATIONS — prioritized next steps\n\n"
-    "Include all findings from the investigation. Do NOT call any tools — just write the report."
+    "Your investigation turns are now complete. Write the final investigation report NOW.\n\n"
+    "IMPORTANT: Start writing the actual report immediately. Do NOT describe what the report "
+    "should contain — just write it. Do NOT output meta-instructions or guidelines.\n\n"
+    "Begin with:\n\n"
+    "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+    "Then write these sections using the data from your investigation:\n\n"
+    "## 1. INVESTIGATION NARRATIVE\n"
+    "The full story: what area was investigated, how many providers were found, "
+    "what was examined, what stood out, what connections were discovered.\n\n"
+    "## 2. PROVIDER DOSSIERS\n"
+    "For each flagged provider: the facts (building sqft, capacity, zoning, visual assessment), "
+    "the reasoning, innocent explanations, recommended next steps, confidence level.\n\n"
+    "## 3. PATTERN ANALYSIS\n"
+    "Cross-provider patterns: shared owners/agents, geographic clustering, temporal patterns.\n\n"
+    "## 4. CONFIDENCE CALIBRATION\n"
+    "What you're confident about vs uncertain about for each finding.\n\n"
+    "## 5. EXPOSURE ESTIMATE\n"
+    "For each flagged provider: excess_capacity x monthly_rate x 12. Aggregate total.\n\n"
+    "## 6. RECOMMENDATIONS\n"
+    "Prioritized next steps for human investigators.\n\n"
+    "Include ALL findings from the investigation. Do NOT call any tools. Write the full report now."
 )
+
+
+def _generate_report_with_openai(
+    *,
+    client: Any,
+    messages: List[Dict[str, Any]],
+    model: str,
+    max_tokens: int,
+    emit_chunk: Callable[[str], None] | None = None,
+) -> str:
+    """Run the final report generation call (with continuation handling)."""
+    _enforce_context_budget(messages)
+    messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
+    logger.info("Sending report generation request to %s (timeout=%ds)...", model, _LLM_REPORT_TIMEOUT_SECONDS)
+
+    report_chunks: List[str] = []
+    report_continuation_count = 0
+    while True:
+        report_response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            timeout=_LLM_REPORT_TIMEOUT_SECONDS,
+        )
+        report_choice = report_response.choices[0]
+        raw_content = report_choice.message.content
+        report_text = _normalize_report_output(_extract_text(raw_content))
+        logger.info(
+            "Report response: finish_reason=%s, content_type=%s, content_len=%d, extracted_len=%d",
+            report_choice.finish_reason,
+            type(raw_content).__name__,
+            len(str(raw_content or "")),
+            len(report_text),
+        )
+        if not report_text and raw_content:
+            logger.warning("Report content extraction failed. Raw content: %s", repr(str(raw_content)[:500]))
+        messages.append({"role": "assistant", "content": report_text or ""})
+        if report_text:
+            report_chunks.append(report_text)
+            if emit_chunk:
+                emit_chunk(report_text)
+
+        if report_choice.finish_reason != "length":
+            break
+
+        report_continuation_count += 1
+        if report_continuation_count > _LLM_MAX_CONTINUATIONS:
+            logger.warning("LLM report text remained truncated after %s continuations", _LLM_MAX_CONTINUATIONS)
+            break
+        messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
+        _enforce_context_budget(messages)
+
+    if not report_chunks:
+        logger.warning("Report generation returned empty response.")
+        return ""
+    return _normalize_report_output("\n\n".join(report_chunks))
+
+
+def _append_final_report_to_state(
+    *,
+    report_text: str,
+    narration: InvestigationNarration,
+    assistant_text: List[str],
+    raw_turns: List[Dict[str, Any]],
+) -> str:
+    """Persist final report text into narration/state structures exactly once."""
+    cleaned = _normalize_report_output(report_text)
+    if not cleaned:
+        return ""
+    narration.add_narration(cleaned)
+    narration.add_assistant_text(cleaned)
+    assistant_text.append(cleaned)
+    raw_turns.append({"turn": len(raw_turns) + 1, "assistant": cleaned.strip(), "tool_results": []})
+    return cleaned
 
 
 def _build_result_payload(
@@ -599,10 +1042,18 @@ def _build_result_payload(
     **extras: Any,
 ) -> Dict[str, Any]:
     """Assemble the standard investigation result payload."""
+    final_report_text = _ensure_report_text(
+        mode=mode,
+        query=query,
+        report_text=report_text,
+        assistant_text=assistant_text,
+        raw_turns=raw_turns,
+        tool_calls=tool_calls,
+    )
     metrics = _extract_metrics(tool_calls)
     thinking_analysis = build_thinking_analysis(
         query=query,
-        report_text=report_text,
+        report_text=final_report_text,
         narration_text=narration.to_markdown(),
         thinking=thinking_blocks,
         tool_calls=tool_calls,
@@ -616,7 +1067,7 @@ def _build_result_payload(
         "flagged": metrics["flagged"],
         "narration": narration.to_markdown(),
         "assistant_text": "\n".join(assistant_text) or fallback_text,
-        "report_text": report_text,
+        "report_text": final_report_text,
         "tool_calls": tool_calls,
         "thinking": thinking_blocks,
         "thinking_analysis": thinking_analysis,
@@ -687,13 +1138,19 @@ def _run_openai_investigation(
     for turn in range(1, max_turns + 1):
         _enforce_context_budget(messages)
 
-        # Build request messages — inject pending street view images temporarily
-        request_messages = messages
+        # Build request messages — inject turn progress and pending images temporarily
+        request_messages = list(messages)
+        turns_remaining = max_turns - turn
+        request_messages.append({
+            "role": "user",
+            "content": f"[TURN {turn}/{max_turns} — {turns_remaining} turns remaining after this one. "
+            f"{'This is your LAST investigation turn.' if turns_remaining == 0 else ''}]",
+        })
         if _pending_sv_images:
             img_msg = _build_image_message(_pending_sv_images)
             _pending_sv_images = []
             if img_msg:
-                request_messages = list(messages) + [img_msg]
+                request_messages.append(img_msg)
 
         response = client.chat.completions.create(
             model=model,
@@ -808,45 +1265,29 @@ def _run_openai_investigation(
         raw_turns.append(turn_summary)
 
     # ── Report generation: one additional LLM call outside the turn budget ──
+    logger.info("Investigation turns complete (%d turns). Starting report generation.", len(raw_turns))
     report_text_final = ""
     if _report_already_written(assistant_text):
-        # LLM wrote the report inline during investigation — extract it
-        report_text_final = _extract_inline_report(assistant_text)
-    else:
-        _enforce_context_budget(messages)
-        messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
+        report_text_final = _normalize_report_output(_extract_inline_report(assistant_text))
+        if report_text_final:
+            logger.info("Report extracted from inline text (%d chars).", len(report_text_final))
+
+    if not _looks_like_final_report(report_text_final):
         try:
-            report_chunks: List[str] = []
-            report_continuation_count = 0
-            while True:
-                report_response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_tokens=settings.max_tokens,
-                    timeout=settings.tool_timeout_seconds,
+            generated_report = _generate_report_with_openai(
+                client=client,
+                messages=messages,
+                model=model,
+                max_tokens=settings.max_tokens,
+            )
+            if generated_report:
+                report_text_final = _append_final_report_to_state(
+                    report_text=generated_report,
+                    narration=narration,
+                    assistant_text=assistant_text,
+                    raw_turns=raw_turns,
                 )
-                report_choice = report_response.choices[0]
-                report_text = _extract_text(report_choice.message.content).strip()
-                messages.append({"role": "assistant", "content": report_text or ""})
-                if report_text:
-                    report_chunks.append(report_text)
-
-                if report_choice.finish_reason != "length":
-                    break
-
-                report_continuation_count += 1
-                if report_continuation_count > _LLM_MAX_CONTINUATIONS:
-                    logger.warning("LLM report text remained truncated after %s continuations", _LLM_MAX_CONTINUATIONS)
-                    break
-                messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
-                _enforce_context_budget(messages)
-
-            if report_chunks:
-                report_text_final = "\n\n".join(report_chunks).strip()
-                narration.add_narration(report_text_final)
-                narration.add_assistant_text(report_text_final)
-                assistant_text.append(report_text_final)
-                raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text_final.strip(), "tool_results": []})
+                logger.info("Report generated successfully (%d chars).", len(report_text_final))
         except Exception:
             logger.warning("Report generation call failed", exc_info=True)
 
@@ -899,13 +1340,19 @@ def _run_openai_investigation_stream(
             _enforce_context_budget(messages)
             yield {"event": "turn_start", "turn": turn, "max_turns": max_turns}
 
-            # Inject pending street view images temporarily for this API call
-            request_messages = messages
+            # Build request messages — inject turn progress and pending images temporarily
+            request_messages = list(messages)
+            turns_remaining = max_turns - turn
+            request_messages.append({
+                "role": "user",
+                "content": f"[TURN {turn}/{max_turns} — {turns_remaining} turns remaining after this one. "
+                f"{'This is your LAST investigation turn.' if turns_remaining == 0 else ''}]",
+            })
             if _pending_sv_images:
                 img_msg = _build_image_message(_pending_sv_images)
                 _pending_sv_images = []
                 if img_msg:
-                    request_messages = list(messages) + [img_msg]
+                    request_messages.append(img_msg)
 
             response = client.chat.completions.create(
                 model=model,
@@ -1057,47 +1504,31 @@ def _run_openai_investigation_stream(
             yield {"event": "turn_done", "turn": turn, "tools": [item["tool"] for item in turn_summary["tool_results"]]}
 
         # ── Report generation: one additional LLM call outside the turn budget ──
+        logger.info("Investigation turns complete (%d turns). Starting report generation.", len(raw_turns))
         report_text_final = ""
         if _report_already_written(assistant_text):
-            # LLM wrote the report inline during investigation — extract it
-            report_text_final = _extract_inline_report(assistant_text)
-        else:
+            report_text_final = _normalize_report_output(_extract_inline_report(assistant_text))
+            if report_text_final:
+                logger.info("Report extracted from inline text (%d chars).", len(report_text_final))
+
+        if not _looks_like_final_report(report_text_final):
             yield {"event": "report_start"}
-            _enforce_context_budget(messages)
-            messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
             try:
-                report_chunks: List[str] = []
-                report_continuation_count = 0
-                while True:
-                    report_response = client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        max_tokens=settings.max_tokens,
-                        timeout=settings.tool_timeout_seconds,
+                generated_report = _generate_report_with_openai(
+                    client=client,
+                    messages=messages,
+                    model=model,
+                    max_tokens=settings.max_tokens,
+                )
+                if generated_report:
+                    report_text_final = _append_final_report_to_state(
+                        report_text=generated_report,
+                        narration=narration,
+                        assistant_text=assistant_text,
+                        raw_turns=raw_turns,
                     )
-                    report_choice = report_response.choices[0]
-                    report_text = _extract_text(report_choice.message.content).strip()
-                    messages.append({"role": "assistant", "content": report_text or ""})
-                    if report_text:
-                        report_chunks.append(report_text)
-                        yield {"event": "assistant_text", "turn": len(raw_turns) + 1, "text": report_text}
-
-                    if report_choice.finish_reason != "length":
-                        break
-
-                    report_continuation_count += 1
-                    if report_continuation_count > _LLM_MAX_CONTINUATIONS:
-                        logger.warning("LLM report text remained truncated after %s continuations", _LLM_MAX_CONTINUATIONS)
-                        break
-                    messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
-                    _enforce_context_budget(messages)
-
-                if report_chunks:
-                    report_text_final = "\n\n".join(report_chunks).strip()
-                    narration.add_narration(report_text_final)
-                    narration.add_assistant_text(report_text_final)
-                    assistant_text.append(report_text_final)
-                    raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text_final.strip(), "tool_results": []})
+                    yield {"event": "assistant_text", "turn": len(raw_turns), "text": report_text_final}
+                    logger.info("Report generated successfully (%d chars).", len(report_text_final))
             except Exception:
                 logger.warning("Report generation call failed", exc_info=True)
 
