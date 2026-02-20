@@ -32,6 +32,7 @@ from tools.licensing import check_licensing_status
 from tools.places import get_places_info
 from tools.property import get_property_data
 from tools.providers import search_childcare_providers
+from tools.satellite_view import get_satellite_view
 from tools.street_view import get_street_view
 
 
@@ -259,6 +260,11 @@ def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
     # 5. Licensing overrides: addr_arg -> capacity
     licensing_cap: Dict[str, Dict[str, Any]] = {}
 
+    # 6. Track sequence: when property returns 0 sqft, link AI-estimated sqft
+    #    from a subsequent calculate_max_capacity call to that address.
+    _last_property_addr: str = ""
+    _property_addrs_without_sqft: set = set()
+
     for tc in tool_calls:
         tool = tc.get("tool", "")
         result = tc.get("result")
@@ -279,14 +285,25 @@ def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
         elif tool == "get_property_data" and isinstance(result, dict):
             addr = args.get("address", "")
             sqft = result.get("building_sqft", 0)
+            _last_property_addr = addr
             if addr and sqft:
                 property_sqft[addr] = float(sqft)
+            elif addr:
+                _property_addrs_without_sqft.add(addr)
 
         elif tool == "calculate_max_capacity" and isinstance(result, dict):
             sqft = args.get("building_sqft", 0)
             max_cap = result.get("max_legal_capacity", 0)
             if sqft and max_cap:
                 max_caps[float(sqft)] = int(max_cap)
+                # Link AI-estimated sqft to the most recent property address
+                # that had no sqft from GIS (don't overwrite real GIS data).
+                if (
+                    _last_property_addr
+                    and _last_property_addr in _property_addrs_without_sqft
+                    and _last_property_addr not in property_sqft
+                ):
+                    property_sqft[_last_property_addr] = float(sqft)
 
         elif tool == "check_licensing_status" and isinstance(result, dict):
             if result.get("status") == "found":
@@ -626,6 +643,7 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         "search_childcare_providers": search_childcare_providers,
         "get_property_data": get_property_data,
         "get_street_view": get_street_view,
+        "get_satellite_view": get_satellite_view,
         "get_places_info": get_places_info,
         "check_licensing_status": check_licensing_status,
         "check_business_registration": check_business_registration,
@@ -769,11 +787,23 @@ def _run_openai_investigation(
                     "content": json.dumps(_compact_tool_result(result)),
                 }
             )
-            # Collect street view images for visual analysis in the next turn
+            # Collect street view / satellite images for visual analysis in the next turn
             if tool_name == "get_street_view" and tool_status == "ok" and isinstance(result, dict):
                 sv_images = result.get("images", [])
                 if sv_images and any(img.get("status") != "fallback" for img in sv_images):
                     _pending_sv_images.append(result)
+            if tool_name == "get_satellite_view" and tool_status == "ok" and isinstance(result, dict):
+                b64 = result.get("image_base64", "")
+                if b64 and result.get("status") != "fallback":
+                    _pending_sv_images.append({
+                        "address": result.get("address", ""),
+                        "images": [{
+                            "heading": "satellite",
+                            "image_base64": b64,
+                            "capture_date": "satellite",
+                            "status": "ok",
+                        }],
+                    })
 
         raw_turns.append(turn_summary)
 
@@ -997,11 +1027,23 @@ def _run_openai_investigation_stream(
                         "content": json.dumps(_compact_tool_result(result)),
                     }
                 )
-                # Collect street view images for visual analysis in the next turn
+                # Collect street view / satellite images for visual analysis in the next turn
                 if tool_name == "get_street_view" and tool_status == "ok" and isinstance(result, dict):
                     sv_images = result.get("images", [])
                     if sv_images and any(img.get("status") != "fallback" for img in sv_images):
                         _pending_sv_images.append(result)
+                if tool_name == "get_satellite_view" and tool_status == "ok" and isinstance(result, dict):
+                    b64 = result.get("image_base64", "")
+                    if b64 and result.get("status") != "fallback":
+                        _pending_sv_images.append({
+                            "address": result.get("address", ""),
+                            "images": [{
+                                "heading": "satellite",
+                                "image_base64": b64,
+                                "capture_date": "satellite",
+                                "status": "ok",
+                            }],
+                        })
 
                 yield {
                     "event": "tool_payload",

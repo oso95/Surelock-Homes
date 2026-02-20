@@ -117,6 +117,21 @@ def get_tool_definitions():
             },
         },
         {
+            "name": "get_satellite_view",
+            "description": "Fetch a top-down satellite image from Google Maps Static API. Zoom 19 gives ~0.3m/pixel — building-level detail for visual estimation of building footprint area. Use the meters_per_pixel value to convert pixel measurements to real-world dimensions.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "address": {"type": "string", "description": "Street address to center on"},
+                    "lat": {"type": "number", "description": "Latitude for precise centering (optional)"},
+                    "lon": {"type": "number", "description": "Longitude for precise centering (optional)"},
+                    "zoom": {"type": "integer", "default": 19, "minimum": 15, "maximum": 21, "description": "Zoom level (19 recommended for buildings)"},
+                    "size": {"type": "string", "default": "640x640"},
+                },
+                "required": ["address"],
+            },
+        },
+        {
             "name": "geocode_address",
             "description": "Validate and standardize an address. Returns coordinates, formatted address, and whether the address is valid.",
             "input_schema": {"type": "object", "properties": {"address": {"type": "string"}}, "required": ["address"]},

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -232,6 +234,111 @@ def _read_csv(path: Path) -> List[Dict[str, str]]:
         return [dict(row) for row in reader]
 
 
+_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+_OVERPASS_TIMEOUT = 6.0
+_OSM_SEARCH_RADIUS_M = 50
+_OSM_RATE_LIMIT_DELAY = 0.5
+_last_osm_call: float = 0.0
+
+
+def _shoelace_area_sqft(coords: List[List[float]]) -> float:
+    """Compute polygon area in sq ft from lat/lon coordinates using the shoelace formula.
+
+    Uses a local Mercator approximation to convert degrees to meters, then to sq ft.
+    coords: list of [lon, lat] pairs (GeoJSON order).
+    """
+    if len(coords) < 3:
+        return 0.0
+    # Reference point: centroid
+    ref_lat = sum(c[1] for c in coords) / len(coords)
+    lat_rad = math.radians(ref_lat)
+    m_per_deg_lat = 111_132.0
+    m_per_deg_lon = 111_132.0 * math.cos(lat_rad)
+
+    # Convert to meters relative to first point
+    xs = [(c[0] - coords[0][0]) * m_per_deg_lon for c in coords]
+    ys = [(c[1] - coords[0][1]) * m_per_deg_lat for c in coords]
+
+    # Shoelace formula
+    n = len(xs)
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += xs[i] * ys[j]
+        area -= xs[j] * ys[i]
+    area_m2 = abs(area) / 2.0
+    return area_m2 * 10.7639  # m² → sq ft
+
+
+def _estimate_sqft_from_osm(lat: float, lon: float) -> Dict[str, Any]:
+    """Query Overpass API for building polygons near (lat, lon) and return estimated sqft.
+
+    Returns dict with keys: building_sqft, building_sqft_source, building_sqft_confidence.
+    """
+    global _last_osm_call
+    result = {
+        "building_sqft": 0.0,
+        "building_sqft_source": "none",
+        "building_sqft_confidence": "none",
+    }
+    if not lat or not lon:
+        return result
+
+    # Rate-limit OSM calls
+    elapsed = time.time() - _last_osm_call
+    if elapsed < _OSM_RATE_LIMIT_DELAY:
+        time.sleep(_OSM_RATE_LIMIT_DELAY - elapsed)
+
+    query = (
+        f'[out:json][timeout:{int(_OVERPASS_TIMEOUT)}];'
+        f'way["building"](around:{_OSM_SEARCH_RADIUS_M},{lat},{lon});'
+        f'out body;>;out skel qt;'
+    )
+    try:
+        _last_osm_call = time.time()
+        resp = requests.post(
+            _OVERPASS_URL,
+            data={"data": query},
+            timeout=_OVERPASS_TIMEOUT + 2,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        logger.debug("OSM Overpass query failed for (%s, %s)", lat, lon, exc_info=True)
+        return result
+
+    elements = data.get("elements", [])
+    if not elements:
+        return result
+
+    # Collect node coordinates
+    nodes: Dict[int, List[float]] = {}
+    ways: List[Dict[str, Any]] = []
+    for el in elements:
+        if el["type"] == "node":
+            nodes[el["id"]] = [el["lon"], el["lat"]]
+        elif el["type"] == "way":
+            ways.append(el)
+
+    # Compute footprint area for each building way, pick the largest
+    best_area = 0.0
+    for way in ways:
+        node_ids = way.get("nodes", [])
+        coords = [nodes[nid] for nid in node_ids if nid in nodes]
+        if len(coords) < 3:
+            continue
+        area = _shoelace_area_sqft(coords)
+        if area > best_area:
+            best_area = area
+
+    if best_area > 0:
+        result["building_sqft"] = round(best_area, 1)
+        result["building_sqft_source"] = "osm_footprint"
+        result["building_sqft_confidence"] = "moderate"
+
+    return result
+
+
 def _query_hennepin(address: str) -> Dict[str, Any]:
     parsed = _parse_address(address)
     if "house" not in parsed or "street" not in parsed:
@@ -267,9 +374,23 @@ def _query_hennepin(address: str) -> Dict[str, Any]:
         street_norm = str(attrs.get("STREET_NM", "")).replace(" ", "").replace(".", "").upper()
         if parsed["street"].replace(" ", "") not in street_norm:
             continue
+        lat = _to_float(attrs.get("LAT"))
+        lon = _to_float(attrs.get("LON"))
+
+        # Try to estimate building sqft from OSM footprint data
+        osm = _estimate_sqft_from_osm(lat, lon)
+        building_sqft = osm["building_sqft"]
+        building_sqft_source = osm["building_sqft_source"]
+        building_sqft_confidence = osm["building_sqft_confidence"]
+        note = ""
+        if not building_sqft:
+            note = "Building sqft not available from Hennepin GIS or OSM; use building_market_value for size estimates"
+
         return {
             "address": attrs.get("STREET_NM", ""),
-            "building_sqft": 0.0,
+            "building_sqft": building_sqft,
+            "building_sqft_source": building_sqft_source,
+            "building_sqft_confidence": building_sqft_confidence,
             "lot_size": str(int(parcel_area)) if parcel_area else "",
             "zoning": attrs.get("PR_TYP_NM1", ""),
             "property_class": attrs.get("PR_TYP_NM1", ""),
@@ -277,9 +398,9 @@ def _query_hennepin(address: str) -> Dict[str, Any]:
             "building_market_value": _to_int(attrs.get("BLDG_MV1"), 0),
             "total_market_value": _to_int(attrs.get("MKT_VAL_TOT"), 0),
             "owner_name": attrs.get("OWNER_NM", ""),
-            "latitude": _to_float(attrs.get("LAT")),
-            "longitude": _to_float(attrs.get("LON")),
-            "note": "Building sqft not available from Hennepin GIS; use building_market_value for size estimates",
+            "latitude": lat,
+            "longitude": lon,
+            "note": note,
         }
     return {}
 
@@ -476,7 +597,8 @@ def get_property_data(
                     "state": state_key,
                 }
                 for extra in ("building_market_value", "total_market_value", "owner_name",
-                              "latitude", "longitude", "note", "pin", "source_dataset", "assessed_total"):
+                              "latitude", "longitude", "note", "pin", "source_dataset", "assessed_total",
+                              "building_sqft_source", "building_sqft_confidence"):
                     if live.get(extra):
                         result[extra] = live[extra]
                 return result

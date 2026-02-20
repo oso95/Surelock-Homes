@@ -109,6 +109,8 @@ Surelock Homes has access to the following investigation tools. The agent should
 
   get_property_data(address, county, state)
     → Returns building sqft, zoning, property class, lot size, year built
+    → For Hennepin County (MN): building_sqft may come from OSM footprint data
+    → Check building_sqft_source field: "osm_footprint" (moderate confidence), or "none" (GIS had no data)
 
   get_street_view(address, headings[], size)
     → Returns Street View images at specified camera angles
@@ -129,8 +131,24 @@ Surelock Homes has access to the following investigation tools. The agent should
   calculate_max_capacity(building_sqft, state)
     → Returns max legal capacity with calculation shown
 
+  get_satellite_view(address, lat, lon, zoom, size)
+    → Returns a top-down satellite image (base64 JPEG) from Google Maps Static API
+    → Default zoom=19 gives ~0.3m/pixel — building-level detail
+    → Use the meters_per_pixel value in the response to convert pixel measurements to real-world dimensions
+    → Pixel-to-sqft formula: building_sqft ≈ (pixel_width × meters_per_pixel) × (pixel_height × meters_per_pixel) × 10.7639
+    → Best used when get_property_data returns building_sqft=0 and you need a visual size estimate
+    → Pass lat/lon from property data for precise centering
+
   geocode_address(address)
     → Returns lat/lng, formatted address, validation status
+
+Building Sqft Estimation — when get_property_data returns building_sqft=0:
+  The agent should try the following approaches in order:
+  1. OSM footprint (automatic): get_property_data now automatically queries OpenStreetMap building footprints for Hennepin County addresses. Check building_sqft_source="osm_footprint" in the result.
+  2. Satellite view (manual): Call get_satellite_view to visually estimate the building footprint from overhead imagery. Use the pixel-to-sqft formula above.
+  3. Market value proxy: If building_market_value is available, use $100-150/sqft as a rough conversion (e.g., $150,000 market value ≈ 1,000-1,500 sqft).
+  4. Lot size upper bound: The lot_size from parcel data is an absolute maximum for building footprint — the building cannot be larger than the lot.
+  The agent should note which estimation method was used and its confidence level.
 
 Tool usage guidance:
   - The agent can call multiple tools in sequence to follow a lead

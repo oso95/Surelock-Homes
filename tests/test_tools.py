@@ -700,3 +700,106 @@ def test_capacity_unsupported_state_raises():
     import pytest
     with pytest.raises(ValueError):
         calculate_max_capacity(1000, state="XX")
+
+
+# ── OSM building footprint estimation tests ──
+
+
+def test_shoelace_area_sqft_computes_rectangle():
+    """_shoelace_area_sqft should compute a known rectangular area."""
+    from tools.property import _shoelace_area_sqft
+
+    # ~30m x ~30m square at lat 45 → ~900 m² → ~9687 sqft
+    # Using coords in [lon, lat] order (GeoJSON convention)
+    lat, lon = 45.0, -93.0
+    d_lat = 30.0 / 111132.0  # ~30m in degrees
+    d_lon = 30.0 / (111132.0 * __import__("math").cos(__import__("math").radians(lat)))
+    coords = [
+        [lon, lat],
+        [lon + d_lon, lat],
+        [lon + d_lon, lat + d_lat],
+        [lon, lat + d_lat],
+        [lon, lat],  # closed polygon
+    ]
+    area = _shoelace_area_sqft(coords)
+    # ~900 m² ≈ 9688 sqft — allow 5% tolerance for projection approximation
+    assert 9000 < area < 10500
+
+
+def test_estimate_sqft_from_osm_with_mock_polygon(monkeypatch):
+    """_estimate_sqft_from_osm should compute footprint area from mock OSM data."""
+    from tools import property as prop_mod
+    import math
+
+    lat, lon = 45.07, -93.35
+    d_lat = 20.0 / 111132.0
+    d_lon = 20.0 / (111132.0 * math.cos(math.radians(lat)))
+    # Build a mock Overpass response with a simple square building
+    mock_response = {
+        "elements": [
+            {"type": "node", "id": 1, "lon": lon, "lat": lat},
+            {"type": "node", "id": 2, "lon": lon + d_lon, "lat": lat},
+            {"type": "node", "id": 3, "lon": lon + d_lon, "lat": lat + d_lat},
+            {"type": "node", "id": 4, "lon": lon, "lat": lat + d_lat},
+            {"type": "way", "id": 100, "nodes": [1, 2, 3, 4, 1], "tags": {"building": "yes"}},
+        ]
+    }
+
+    def mock_post(url, data=None, timeout=None):
+        class MockResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return mock_response
+
+        return MockResp()
+
+    monkeypatch.setattr(prop_mod.requests, "post", mock_post)
+    monkeypatch.setattr(prop_mod, "_last_osm_call", 0.0)
+
+    result = prop_mod._estimate_sqft_from_osm(lat, lon)
+    assert result["building_sqft_source"] == "osm_footprint"
+    assert result["building_sqft_confidence"] == "moderate"
+    # 20m × 20m = 400 m² ≈ 4306 sqft
+    assert 3800 < result["building_sqft"] < 4800
+
+
+def test_estimate_sqft_from_osm_handles_timeout(monkeypatch):
+    """_estimate_sqft_from_osm should return gracefully on network timeout."""
+    from tools import property as prop_mod
+    import requests as req_lib
+
+    def mock_post_timeout(url, data=None, timeout=None):
+        raise req_lib.exceptions.Timeout("Overpass timed out")
+
+    monkeypatch.setattr(prop_mod.requests, "post", mock_post_timeout)
+    monkeypatch.setattr(prop_mod, "_last_osm_call", 0.0)
+
+    result = prop_mod._estimate_sqft_from_osm(45.07, -93.35)
+    assert result["building_sqft"] == 0.0
+    assert result["building_sqft_source"] == "none"
+
+
+# ── Satellite view tests ──
+
+
+def test_satellite_view_fallback_without_api_key(monkeypatch):
+    """get_satellite_view should return fallback when no API key is configured."""
+    from tools.satellite_view import get_satellite_view
+    from config import Settings
+
+    monkeypatch.setattr(
+        "tools.satellite_view.load_settings",
+        lambda: Settings(google_maps_api_key=""),
+    )
+    # Clear any cached files for this address
+    from tools.satellite_view import _cache_path
+    cache = _cache_path("123 Test St", 19)
+    if cache.exists():
+        cache.unlink()
+
+    result = get_satellite_view("123 Test St")
+    assert result["status"] == "fallback"
+    assert result["zoom"] == 19
+    assert "image_base64" in result
