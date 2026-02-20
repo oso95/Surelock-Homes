@@ -1,0 +1,62 @@
+{
+  "source": "Nick Shirley MN case set (calibration list)",
+  "state": "MN",
+  "city": "Minneapolis",
+  "notes": "These addresses are used as calibration targets for the Minnesota investigation run.",
+  "cases": [
+    {
+      "id": "mn-shirley-01",
+      "provider_name": "Midtown Childcare Center Inc",
+      "address": "2940 Chicago Ave, Minneapolis, MN 55407",
+      "expected_flag": true
+    },
+    {
+      "id": "mn-shirley-02",
+      "provider_name": "Happy Child Care Center",
+      "address": "2609 Bloomington Ave, Minneapolis, MN 55407",
+      "expected_flag": true
+    },
+    {
+      "id": "mn-shirley-03",
+      "provider_name": "Ikram Childcare Center",
+      "address": "2617 Bloomington Ave, Minneapolis, MN 55407",
+      "expected_flag": true
+    },
+    {
+      "id": "mn-shirley-04",
+      "provider_name": "Learn N Play Inc",
+      "address": "2647 Bloomington Ave, Minneapolis, MN 55407",
+      "expected_flag": true
+    },
+    {
+      "id": "mn-shirley-05",
+      "provider_name": "Sunshine Child Care Center",
+      "address": "1822 E Lake St, Minneapolis, MN 55407",
+      "expected_flag": true
+    },
+    {
+      "id": "mn-shirley-06",
+      "provider_name": "Minnesota Best Childcare Center",
+      "address": "3018 17th Ave S, Minneapolis, MN 55407",
+      "expected_flag": true
+    },
+    {
+      "id": "mn-shirley-07",
+      "provider_name": "I Care Child Center",
+      "address": "3659 Cedar Ave S, Minneapolis, MN 55407",
+      "expected_flag": true
+    },
+    {
+      "id": "mn-shirley-08",
+      "provider_name": "Twin Cities Daycare",
+      "address": "2817 Oakland Ave S, Minneapolis, MN 55407",
+      "expected_flag": true
+    },
+    {
+      "id": "mn-shirley-09",
+      "provider_name": "Degan Child Care Center LLC",
+      "address": "1545 E Lake St, Minneapolis, MN 55407",
+      "expected_flag": true
+    }
+  ]
+}

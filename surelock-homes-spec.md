@@ -107,7 +107,7 @@ This design showcases Opus 4.6's reasoning capability. A fixed pipeline would de
 │  │  3. Pattern Analysis (cross-provider connections)      │ │
 │  │  4. Confidence Calibration (what the agent is sure of) │ │
 │  │  5. Exposure Estimate (potential $ at risk)            │ │
-│  │  6. Referral Drafts (actionable letters to IG)        │ │
+│  │  6. Prioritized Recommendations (actionable next steps) │ │
 │  └────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -589,7 +589,7 @@ Online hackathon → Submit:
 *[Show: agent stops, says "Wait —", follows the lead, reveals a network]*
 
 **[4:00-4:30] The Output**
-*[Show: generated investigation report, exposure estimate, referral letter]*
+*[Show: generated investigation report, exposure estimate, prioritized recommendations]*
 
 **[4:30-5:00] Close**
 "Building codes are physical laws — you either have 35 square feet per child or you don't. Surelock Homes didn't follow a script. It investigated, discovered patterns, and followed leads. The cross-provider network it found wasn't in any predefined rule. That's what Opus 4.6's reasoning enables — genuine investigative intelligence.
@@ -796,7 +796,7 @@ Record the submission video showing:
 - The investigation running (screen recording of terminal or simple UI)
 - Key narration moments highlighted
 - The "wow moment" where the agent discovers a pattern
-- Final outputs (report, exposure estimate, referral letter)
+- Final outputs (report, exposure estimate, recommendations)
 
 Terminal with colored/formatted output is sufficient. Streamlit UI is nice-to-have.
 
@@ -845,28 +845,27 @@ Day 6-7: Buffer
 ### 7.4 Scope Tiers
 
 **MVP (Must have for submission):**
-- [ ] Agent loop with Extended Thinking
-- [ ] 4 core tools: provider search, property data, Street View, capacity calc
-- [ ] System prompt (autonomous investigator style)
-- [ ] MN calibration run (Shirley cases)
-- [ ] At least 1 IL discovery run with genuine findings
+- [x] Agent loop with Extended Thinking
+- [x] 4 core tools: provider search, property data, Street View, capacity calc
+- [x] System prompt (autonomous investigator style)
+- [x] MN calibration run (Shirley cases)
+- [x] At least 1 IL discovery run with genuine findings
 - [ ] Demo video showing investigation + AI reasoning
-- [ ] Narration log showing the agent's thought process
+- [x] Narration log showing the agent's thought process
 
 **Strong Submission (Should have):**
-- [ ] Business registration tool with agent reverse-lookup
-- [ ] Agent discovers cross-provider pattern autonomously
-- [ ] Exposure estimate in output
-- [ ] Confidence calibration in output
-- [ ] Referral letter drafts
-- [ ] Clean GitHub repo with README
+- [x] Business registration tool with agent reverse-lookup
+- [x] Agent discovers cross-provider pattern autonomously
+- [x] Exposure estimate in output
+- [x] Confidence calibration in output
+- [x] Clean GitHub repo with README
 
 **Award-Winning (Nice to have):**
-- [ ] Streamlit UI with map + narration display
-- [ ] Google Places verification layer
-- [ ] Licensing violation history integration
-- [ ] Multi-state demo (switch from IL to another state)
-- [ ] Full thinking log analysis (show what the agent considered but didn't say)
+- [x] Streamlit UI with map + narration display
+- [x] Google Places verification layer
+- [x] Licensing violation history integration
+- [x] Multi-state demo (switch from IL to another state)
+- [x] Full thinking log analysis (show what the agent considered but didn't say)
 
 ---
 

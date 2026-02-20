@@ -25,6 +25,7 @@ except Exception:  # pragma: no cover - optional dependency path
 from config import OUTPUT_DIR, load_settings
 from agent.narration import InvestigationNarration
 from agent.prompt import load_system_prompt
+from agent.thinking_analysis import build_thinking_analysis
 from tools.definitions import get_tool_definitions
 from tools.providers import search_childcare_providers
 from tools.property import get_property_data
@@ -716,6 +717,13 @@ def _run_openrouter_investigation(
             logger.warning("Report generation call failed", exc_info=True)
 
     metrics = _extract_metrics(tool_calls)
+    thinking_analysis = build_thinking_analysis(
+        query=query,
+        report_text=report_text_final,
+        narration_text=narration.to_markdown(),
+        thinking=thinking_blocks,
+        tool_calls=tool_calls,
+    )
     return {
         "query": query,
         "mode": "agent",
@@ -728,6 +736,7 @@ def _run_openrouter_investigation(
         "report_text": report_text_final,
         "tool_calls": tool_calls,
         "thinking": thinking_blocks,
+        "thinking_analysis": thinking_analysis,
         "raw_turns": raw_turns,
     }
 
@@ -954,6 +963,13 @@ def _run_openrouter_investigation_stream(
                 logger.warning("Report generation call failed", exc_info=True)
 
         metrics = _extract_metrics(tool_calls)
+        thinking_analysis = build_thinking_analysis(
+            query=query,
+            report_text=report_text_final,
+            narration_text=narration.to_markdown(),
+            thinking=thinking_blocks,
+            tool_calls=tool_calls,
+        )
         result_payload = {
             "query": query,
             "mode": "agent",
@@ -966,6 +982,7 @@ def _run_openrouter_investigation_stream(
             "report_text": report_text_final,
             "tool_calls": tool_calls,
             "thinking": thinking_blocks,
+            "thinking_analysis": thinking_analysis,
             "raw_turns": raw_turns,
         }
         yield {"event": "complete", "payload": result_payload}
@@ -979,6 +996,13 @@ def _run_openrouter_investigation_stream(
             "query": query,
         }
         metrics = _extract_metrics(tool_calls)
+        thinking_analysis = build_thinking_analysis(
+            query=query,
+            report_text="",
+            narration_text=narration.to_markdown(),
+            thinking=thinking_blocks,
+            tool_calls=tool_calls,
+        )
         result_payload = {
             "query": query,
             "mode": "agent",
@@ -991,6 +1015,7 @@ def _run_openrouter_investigation_stream(
             "report_text": "",
             "tool_calls": tool_calls,
             "thinking": thinking_blocks,
+            "thinking_analysis": thinking_analysis,
             "raw_turns": raw_turns,
             "error": _sanitize_error(exc),
         }
@@ -1018,6 +1043,13 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
             "report_text": "No providers found in fallback dataset.",
             "tool_calls": [],
             "thinking": [],
+            "thinking_analysis": build_thinking_analysis(
+                query=query,
+                report_text="No providers found in fallback dataset.",
+                narration_text=narration.to_markdown(),
+                thinking=[],
+                tool_calls=[],
+            ),
             "raw_turns": [
                 {
                     "turn": 1,
@@ -1087,6 +1119,15 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
     if flagged:
         summary_lines.append("The most likely issues involve capacity versus building size.")
     summary = " ".join(summary_lines)
+    report_text = summary
+    thinking = ["Offline deterministic reasoning mode used for stable results."]
+    thinking_analysis = build_thinking_analysis(
+        query=query,
+        report_text=report_text,
+        narration_text=narration.to_markdown(),
+        thinking=thinking,
+        tool_calls=tool_calls,
+    )
     return {
         "query": query,
         "mode": "offline",
@@ -1096,9 +1137,10 @@ def _offline_investigation(query: str, max_turns: int = 8) -> Dict[str, Any]:
         "turns": min(len(providers), max_turns),
         "narration": narration.to_markdown(),
         "assistant_text": summary,
-        "report_text": summary,
+        "report_text": report_text,
         "tool_calls": tool_calls,
-        "thinking": ["Offline deterministic reasoning mode used for stable results."],
+        "thinking": thinking,
+        "thinking_analysis": thinking_analysis,
         "raw_turns": raw_turns,
     }
 
@@ -1124,7 +1166,16 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
                 "narration": narration.to_markdown(),
                 "assistant_text": "No providers found in fallback dataset.",
                 "report_text": "No providers found in fallback dataset.",
-                "tool_calls": [], "thinking": [], "raw_turns": [
+                "tool_calls": [],
+                "thinking": [],
+                "thinking_analysis": build_thinking_analysis(
+                    query=query,
+                    report_text="No providers found in fallback dataset.",
+                    narration_text=narration.to_markdown(),
+                    thinking=[],
+                    tool_calls=[],
+                ),
+                "raw_turns": [
                     {"turn": 1, "assistant": "No providers found in area.", "tools": []}
                 ],
             },
@@ -1241,6 +1292,16 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
         summary_lines.append("The most likely issues involve capacity versus building size.")
     summary = " ".join(summary_lines)
 
+    report_text = summary
+    thinking = ["Offline deterministic reasoning mode used for stable results."]
+    thinking_analysis = build_thinking_analysis(
+        query=query,
+        report_text=report_text,
+        narration_text=narration.to_markdown(),
+        thinking=thinking,
+        tool_calls=tool_calls,
+    )
+
     yield {
         "event": "complete",
         "payload": {
@@ -1252,9 +1313,10 @@ def _offline_investigation_stream(query: str, max_turns: int = 8):
             "turns": total,
             "narration": narration.to_markdown(),
             "assistant_text": summary,
-            "report_text": summary,
+            "report_text": report_text,
             "tool_calls": tool_calls,
-            "thinking": ["Offline deterministic reasoning mode used for stable results."],
+            "thinking": thinking,
+            "thinking_analysis": thinking_analysis,
             "raw_turns": raw_turns,
         },
     }
@@ -1388,6 +1450,13 @@ def run_investigation(
                 logger.warning("Anthropic report generation call failed", exc_info=True)
 
         metrics = _extract_metrics(tool_calls)
+        thinking_analysis = build_thinking_analysis(
+            query=query,
+            report_text=report_text_final,
+            narration_text=narration.to_markdown(),
+            thinking=thinking_blocks,
+            tool_calls=tool_calls,
+        )
         result = {
             "query": query,
             "mode": "agent",
@@ -1400,6 +1469,7 @@ def run_investigation(
             "report_text": report_text_final,
             "tool_calls": tool_calls,
             "thinking": thinking_blocks,
+            "thinking_analysis": thinking_analysis,
             "raw_turns": raw_turns,
         }
     else:

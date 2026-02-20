@@ -27,6 +27,8 @@ const flagBadge = document.getElementById("flagBadge");
 const flagsList = document.getElementById("flagsList");
 const thinkingList = document.getElementById("thinkingList");
 const thinkingBadge = document.getElementById("thinkingBadge");
+const thinkingAnalysisList = document.getElementById("thinkingAnalysisList");
+const thinkingAnalysisBadge = document.getElementById("thinkingAnalysisBadge");
 const narrativeContent = document.getElementById("narrativeContent");
 const narrativeWordCount = document.getElementById("narrativeWordCount");
 const narrationList = document.getElementById("narrationList");
@@ -418,6 +420,69 @@ function renderThinking(payload) {
   });
 }
 
+function renderThinkingAnalysis(payload) {
+  const analysis = payload && typeof payload.thinking_analysis === "object" ? payload.thinking_analysis : null;
+  if (!analysis) {
+    thinkingAnalysisBadge.textContent = "No analysis";
+    thinkingAnalysisBadge.className = "badge badge--neutral";
+    thinkingAnalysisList.innerHTML = '<p class="placeholder">No thinking analysis available.</p>';
+    return;
+  }
+
+  const unsurfaced = Array.isArray(analysis.unsurfaced_leads) ? analysis.unsurfaced_leads : [];
+  const dropped = Array.isArray(analysis.dropped_paths) ? analysis.dropped_paths : [];
+  const notes = Array.isArray(analysis.notes) ? analysis.notes : [];
+  const signals = Array.isArray(analysis.signals_considered) ? analysis.signals_considered : [];
+  const coverage = analysis.coverage || {};
+  const badgeCount = unsurfaced.length + dropped.length;
+
+  thinkingAnalysisBadge.textContent = `${badgeCount} insight${badgeCount !== 1 ? "s" : ""}`;
+  thinkingAnalysisBadge.className = "badge " + (badgeCount > 0 ? "badge--amber" : "badge--neutral");
+
+  const signalText = signals.slice(0, 6).map((s) => `${s.signal} (${s.count})`).join(", ") || "No signal data.";
+  const summary = analysis.summary || "No summary available.";
+  const providerCount = coverage.provider_search_count ?? "N/A";
+  const investigatedCount = coverage.investigated_address_count ?? "N/A";
+  const remainingCount = coverage.uninvestigated_provider_estimate ?? "N/A";
+
+  const unsurfacedHtml = unsurfaced.length
+    ? `<ul>${unsurfaced.map((item) =>
+      `<li><strong>${escapeHtml(item.subject || "Unknown subject")}</strong> via <code>${escapeHtml(item.tool || "tool")}</code></li>`
+    ).join("")}</ul>`
+    : "<p>No unsurfaced leads.</p>";
+
+  const droppedHtml = dropped.length
+    ? `<ul>${dropped.map((item) => {
+      const missing = Array.isArray(item.missing_followups) ? item.missing_followups.join(", ") : "";
+      return `<li><strong>${escapeHtml(item.subject || "Unknown subject")}</strong> missing follow-up: <code>${escapeHtml(missing)}</code></li>`;
+    }).join("")}</ul>`
+    : "<p>No dropped paths.</p>";
+
+  const notesHtml = notes.length
+    ? `<ul>${notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>`
+    : "<p>No additional notes.</p>";
+
+  thinkingAnalysisList.innerHTML = `
+    <div class="analysis-card">
+      <p><strong>Summary:</strong> ${escapeHtml(summary)}</p>
+      <p><strong>Coverage:</strong> investigated ${escapeHtml(investigatedCount)} of ${escapeHtml(providerCount)} address-level targets (est. remaining: ${escapeHtml(remainingCount)}).</p>
+      <p><strong>Signals considered:</strong> ${escapeHtml(signalText)}</p>
+    </div>
+    <div class="analysis-card">
+      <h4>Unsurfaced Leads</h4>
+      ${unsurfacedHtml}
+    </div>
+    <div class="analysis-card">
+      <h4>Dropped Paths</h4>
+      ${droppedHtml}
+    </div>
+    <div class="analysis-card">
+      <h4>Notes</h4>
+      ${notesHtml}
+    </div>
+  `;
+}
+
 function buildFlagCard(flag, index) {
   const card = document.createElement("article");
   card.className = "flag-card";
@@ -621,6 +686,7 @@ function renderPayload(payload) {
   renderNarrative(payload);
   renderInvestigationNarration(payload);
   renderThinking(payload);
+  renderThinkingAnalysis(payload);
   renderFlags(payload.flagged);
   renderToolCalls(payload.tool_calls);
   renderTimeline(payload);

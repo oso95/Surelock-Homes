@@ -541,6 +541,7 @@ h3 { font-size: 1rem; }
 .section--flags { border-left-color: var(--red); }
 .section--narration { border-left-color: var(--blue); background: #eff6ff; }
 .section--thinking { border-left-color: var(--green); background: var(--thinking-bg); }
+.section--analysis-notes { border-left-color: var(--amber); background: #fffbeb; }
 .section--timeline { border-left-color: var(--blue); background: var(--timeline-bg); }
 .section--tools { border-left-color: var(--purple); }
 .section--raw { border-left-color: #64748b; }
@@ -824,6 +825,40 @@ h3 { font-size: 1rem; }
 
 .thinking-turn__body table { font-size: 0.8rem; }
 .thinking-turn__body pre { font-size: 0.78rem; }
+
+/* Thinking analysis cards */
+.analysis-card {
+  background: #fff;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.8rem;
+  color: var(--text);
+}
+
+.analysis-card + .analysis-card {
+  margin-top: 0.5rem;
+}
+
+.analysis-card h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+  color: #92400e;
+}
+
+.analysis-card p {
+  margin: 0 0 0.35rem;
+  font-size: 0.88rem;
+}
+
+.analysis-card p:last-child {
+  margin-bottom: 0;
+}
+
+.analysis-card ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.86rem;
+}
 
 /* --- Narration turns (continuous chain-of-thought) --- */
 .narration-turn {

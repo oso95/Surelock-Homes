@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-02-19T23:50:52.303902+00:00",
+  "source_result": "output/20260219T145146Z/result.json",
+  "query": "Investigate Minnesota providers in ZIP 55407",
+  "target_threshold": 0.8888888888888888,
+  "passed": true,
+  "total_cases": 9,
+  "expected_true_cases": 9,
+  "detected_true_cases": 9,
+  "detection_rate": 1.0,
+  "cases": [
+    {
+      "id": "mn-shirley-01",
+      "provider_name": "Midtown Childcare Center Inc",
+      "address": "2940 Chicago Ave, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "ble of housing its licensed capacity**, to a cluster of three providers registered at **boarded-up addresses with no web presence**, to a facility listed as **permanently closed on Google yet holding an active state license**, to several providers showing **alarming review patter"
+    },
+    {
+      "id": "mn-shirley-02",
+      "provider_name": "Happy Child Care Center",
+      "address": "2609 Bloomington Ave, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "onnected building or basement level not visible from the street.  **Recommended Next Steps:** 1. **Priority 1:** Physical inspection to measure actual usable square footage 2. Verify whether the building is actually occupied and operating as a childcare facility 3. Request proof "
+    },
+    {
+      "id": "mn-shirley-03",
+      "provider_name": "Ikram Childcare Center",
+      "address": "2617 Bloomington Ave, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "ent level not visible from the street.  **Recommended Next Steps:** 1. **Priority 1:** Physical inspection to measure actual usable square footage 2. Verify whether the building is actually occupied and operating as a childcare facility 3. Request proof of insurance (the business"
+    },
+    {
+      "id": "mn-shirley-04",
+      "provider_name": "Learn N Play Inc",
+      "address": "2647 Bloomington Ave, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "m the street.  **Recommended Next Steps:** 1. **Priority 1:** Physical inspection to measure actual usable square footage 2. Verify whether the building is actually occupied and operating as a childcare facility 3. Request proof of insurance (the business isn't registered with th"
+    },
+    {
+      "id": "mn-shirley-05",
+      "provider_name": "Sunshine Child Care Center",
+      "address": "1822 E Lake St, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "* 1. **Priority 1:** Physical inspection of 2609-2647 Bloomington Ave to determine if ANY childcare operations exist at these addresses 2. Investigate the relationship between these three providers \u2014 are they operated by the same individuals? 3. Verify whether Mercy Center Incorp"
+    },
+    {
+      "id": "mn-shirley-06",
+      "provider_name": "Minnesota Best Childcare Center",
+      "address": "3018 17th Ave S, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "this facility is actually operating \u2014 call the phone number, visit the address 2. If closed, determine WHEN it closed and whether any CCAP payments have been received since closure 3. Investigate MOS Real Estate LLC to determine what else they own \u2014 is this a pattern of holding l"
+    },
+    {
+      "id": "mn-shirley-07",
+      "provider_name": "I Care Child Center",
+      "address": "3659 Cedar Ave S, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "ppear to have some childcare-related features (colored signage, chain-link fencing, transport van, picnic tables). It is on a substantial lot (nearly half an acre). The building value of $991,800 suggests a real commercial structure.  **Recommended Next Steps:** 1. Physical inspe"
+    },
+    {
+      "id": "mn-shirley-08",
+      "provider_name": "Twin Cities Daycare",
+      "address": "2817 Oakland Ave S, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "use nearby park or community outdoor space (MN allows this in some circumstances) - The provider may be registered under a different entity name - The 2022 imagery may not reflect current conditions  **Recommended Next Steps:** 1. **Priority 1:** Verify that DEEF HOLDINGS LLC is "
+    },
+    {
+      "id": "mn-shirley-09",
+      "provider_name": "Degan Child Care Center LLC",
+      "address": "1545 E Lake St, Minneapolis, MN 55407",
+      "expected_flag": true,
+      "detected": true,
+      "reasons": [
+        "matched risk-context in report/narration"
+      ],
+      "context_snippet": "positive Google reviews (recent, with specific operational details) suggest this is a real, functioning facility. There may be rear additions, a usable basement, or other space not visible from the street. The $399,000 building value is higher than what a 1,000 sq ft storefront w"
+    }
+  ]
+}

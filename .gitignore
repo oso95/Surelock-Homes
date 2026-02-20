@@ -3,5 +3,15 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
-!.gitkeep
 
+# Runtime outputs
+output/*
+!output/.gitkeep
+!output/calibration/
+!output/calibration/**
+
+# Generated Street View cache files (keep tracked baseline files, ignore new runtime entries)
+data/cached_street_view/*.json
+
+# Streamlit runtime artifacts
+.streamlit/

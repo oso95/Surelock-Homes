@@ -36,8 +36,12 @@ The app combines:
   - turn starts, tool calls, tool results, errors, completion payload
 - Evidence-rich output:
   - narration markdown, raw tool call records, thinking trace, flags
+- Full thinking-log analysis:
+  - unsurfaced leads, dropped paths, and coverage estimates computed from tool activity
 - Fallback strategy:
   - local CSV/JSON data used when GIS/Google/live endpoints fail or timeout
+- Optional Streamlit reviewer:
+  - map markers + narration + thinking analysis for saved runs
 
 ## Architecture
 
@@ -146,6 +150,12 @@ uvicorn backend_api:app --reload
 Dashboard:
 - `http://127.0.0.1:8000`
 
+Optional Streamlit map + narration UI:
+
+```bash
+streamlit run streamlit_app.py
+```
+
 Health check:
 
 ```bash
@@ -220,6 +230,7 @@ Final payload typically includes:
 - `assistant_text`
 - `tool_calls`
 - `thinking`
+- `thinking_analysis`
 - `raw_turns`
 - `error` (if failure)
 
@@ -298,9 +309,23 @@ python scripts/download_mn_data.py
 python scripts/scrape_il_providers.py
 python scripts/download_parcels.py
 python scripts/cache_street_view.py
+python scripts/run_mn_shirley_calibration.py
 ```
 
 These scripts refresh local artifacts and are designed to degrade gracefully if sources are partially unavailable.
+
+### MN Shirley Calibration
+
+`run_mn_shirley_calibration.py` scores a known Minnesota case set against an investigation result and writes:
+
+- `output/calibration/mn_shirley_calibration_latest.json`
+- `output/calibration/mn_shirley_calibration_latest.md`
+
+Default behavior uses the latest saved Minnesota ZIP `55407` run. You can also rerun live:
+
+```bash
+python scripts/run_mn_shirley_calibration.py --rerun-query --query "Investigate Minnesota providers in ZIP 55407" --max-turns 12
+```
 
 ## Frontend UX Notes
 
@@ -386,6 +411,7 @@ README.md
 requirements.txt
 .env.example
 run.py
+streamlit_app.py
 backend_api.py
 agent/
 tools/
