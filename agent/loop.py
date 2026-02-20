@@ -4,6 +4,8 @@ import argparse
 import json
 import logging
 import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Tuple
@@ -46,6 +48,9 @@ _LLM_CONTINUE_PROMPT = (
     "Continue exactly where your previous response ended. "
     "Do not restart and do not repeat text."
 )
+
+_ROOT_DIR = Path(__file__).resolve().parent.parent
+_BUILD_PAGES_SCRIPT = _ROOT_DIR / "scripts" / "build_pages.py"
 
 
 def _normalize_blocks(content: Any) -> List[Dict[str, Any]]:
@@ -1877,6 +1882,41 @@ def _persist_investigation(run_id: str, payload: Dict[str, Any], output_dir: Pat
     (run_dir / "result.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     (run_dir / "narration.md").write_text(payload.get("narration", ""), encoding="utf-8")
     (run_dir / "tool_calls.json").write_text(json.dumps(payload.get("tool_calls", []), indent=2), encoding="utf-8")
+    _refresh_pages_data(output_dir=output_dir)
+
+
+def _refresh_pages_data(output_dir: Path) -> None:
+    """Regenerate docs/data manifests for GitHub Pages after saving a run.
+
+    This keeps /docs/data in sync with local output/ runs so pushes publish
+    the newest reports without a manual build step.
+    """
+    try:
+        if output_dir.resolve() != OUTPUT_DIR.resolve():
+            return
+    except Exception:
+        return
+    if not _BUILD_PAGES_SCRIPT.exists():
+        return
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(_BUILD_PAGES_SCRIPT)],
+            cwd=str(_ROOT_DIR),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except Exception:
+        logger.warning("Failed to refresh docs/data via scripts/build_pages.py", exc_info=True)
+        return
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        logger.warning(
+            "build_pages.py exited with code %s%s",
+            proc.returncode,
+            f": {stderr[:300]}" if stderr else "",
+        )
 
 
 def run_investigation(

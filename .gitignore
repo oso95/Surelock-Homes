@@ -4,12 +4,6 @@ __pycache__/
 .pytest_cache/
 .env
 
-# Runtime outputs
-output/*
-!output/.gitkeep
-!output/calibration/
-!output/calibration/**
-
 # Runtime map image caches (generated locally; safe to delete/regenerate)
 data/cached_street_view/*.json
 data/cached_satellite_view/*.json

@@ -239,6 +239,12 @@ When saving is enabled in loop execution, results are written to:
 - `output/<UTC_RUN_ID>/narration.md`
 - `output/<UTC_RUN_ID>/tool_calls.json`
 
+When runs are saved to the default `output/` directory, Surelock also auto-refreshes:
+- `docs/data/runs.json`
+- `docs/data/runs/<run_id>.json`
+
+This keeps the GitHub Pages report site aligned with the latest local runs without a manual `build_pages.py` step.
+
 ## Tooling Surface
 
 `tools/definitions.py` exposes 8 tools:

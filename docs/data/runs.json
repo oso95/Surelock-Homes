@@ -1,52 +1,32 @@
 [
   {
-    "id": "20260220T012527Z",
+    "id": "20260220T234021Z",
     "query": "Investigate Minnesota providers in ZIP 55429",
     "mode": "agent",
     "status": "complete",
-    "turns": 13,
+    "turns": 12,
     "provider_count": 21,
-    "flags": 0,
-    "timestamp": "2026-02-20 01:25 UTC"
+    "flags": 7,
+    "timestamp": "2026-02-20 23:40 UTC"
   },
   {
-    "id": "20260220T002846Z",
-    "query": "Investigate Minnesota providers in ZIP 55443",
+    "id": "20260220T141504Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
     "mode": "agent",
     "status": "complete",
-    "turns": 2,
-    "provider_count": 40,
+    "turns": 12,
+    "provider_count": 36,
     "flags": 0,
-    "timestamp": "2026-02-20 00:28 UTC"
+    "timestamp": "2026-02-20 14:15 UTC"
   },
   {
-    "id": "20260219T161123Z",
-    "query": "Investigate Minnesota providers in ZIP 55443",
-    "mode": "agent",
-    "status": "complete",
-    "turns": 21,
-    "provider_count": 40,
-    "flags": 0,
-    "timestamp": "2026-02-19 16:11 UTC"
-  },
-  {
-    "id": "20260219T152142Z",
-    "query": "Investigate Illinois providers in ZIP 60623",
+    "id": "20260220T140405Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
     "mode": "agent",
     "status": "complete",
     "turns": 13,
-    "provider_count": 61,
+    "provider_count": 36,
     "flags": 0,
-    "timestamp": "2026-02-19 15:21 UTC"
-  },
-  {
-    "id": "20260219T145146Z",
-    "query": "Investigate Minnesota providers in ZIP 55407",
-    "mode": "agent",
-    "status": "complete",
-    "turns": 13,
-    "provider_count": 58,
-    "flags": 0,
-    "timestamp": "2026-02-19 14:51 UTC"
+    "timestamp": "2026-02-20 14:04 UTC"
   }
 ]
