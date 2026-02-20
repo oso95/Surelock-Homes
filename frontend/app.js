@@ -820,6 +820,15 @@ runBtn.addEventListener("click", async () => {
             addActivity("\u{1F4DD}", `Thinking: ${event.text.slice(0, 140)}${event.text.length > 140 ? "..." : ""}`, "activity-log__text--muted");
             break;
 
+          case "nudge":
+            addActivity("\u21AA\uFE0F", event.message || "Continuing investigation...", "activity-log__text--muted");
+            break;
+
+          case "report_start":
+            loadingStatus.textContent = "Compiling final report";
+            addActivity("\u{1F4C4}", "Writing final report", "activity-log__text--muted");
+            break;
+
           case "providers_loaded":
             addActivity("\u{1F4CB}", `${event.count} providers found`, "");
             setProgress(5);
@@ -918,11 +927,7 @@ runBtn.addEventListener("click", async () => {
 const OFFLINE_PREFERENCE_KEY = "surelock_offline_mode";
 
 function updateModeHint() {
-  if (offlineToggle.checked) {
-    modeHint.textContent = "Offline mode";
-  } else {
-    modeHint.textContent = "Online mode";
-  }
+  modeHint.textContent = offlineToggle.checked ? "Offline mode" : "Online mode";
   const toggleLabel = offlineToggle.closest("[role='switch']");
   if (toggleLabel) {
     toggleLabel.setAttribute("aria-checked", String(offlineToggle.checked));

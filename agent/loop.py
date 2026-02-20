@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Tuple
-
-import json
-from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -18,29 +16,34 @@ except Exception:  # pragma: no cover - optional dependency path
     anthropic = None
 
 try:
-    import requests
+    from openai import OpenAI
 except Exception:  # pragma: no cover - optional dependency path
-    requests = None
+    OpenAI = None
 
-from config import OUTPUT_DIR, load_settings
 from agent.narration import InvestigationNarration
 from agent.prompt import load_system_prompt
 from agent.thinking_analysis import build_thinking_analysis
-from tools.definitions import get_tool_definitions
-from tools.providers import search_childcare_providers
-from tools.property import get_property_data
-from tools.street_view import get_street_view
-from tools.places import get_places_info
-from tools.licensing import check_licensing_status
+from config import OUTPUT_DIR, load_settings
 from tools.business_reg import check_business_registration
 from tools.capacity import calculate_max_capacity
+from tools.definitions import get_tool_definitions
 from tools.geocoding import geocode_address
+from tools.licensing import check_licensing_status
+from tools.places import get_places_info
+from tools.property import get_property_data
+from tools.providers import search_childcare_providers
+from tools.street_view import get_street_view
 
 
-_OPENROUTER_MAX_CONTEXT_CHARS = 180000
-_OPENROUTER_TOOL_PAYLOAD_CHARS = 60000   # must fit 200 providers × ~250 chars each after compaction
-_OPENROUTER_MAX_MEDIA_ITEMS = 6          # images, reviews, features — bulky, rarely need all
-_OPENROUTER_MAX_LIST_ITEMS = 200         # provider search results — LLM must see all to triage
+_LLM_MAX_CONTEXT_CHARS = 180000
+_LLM_TOOL_PAYLOAD_CHARS = 60000   # must fit 200 providers × ~250 chars each after compaction
+_LLM_MAX_MEDIA_ITEMS = 6          # images, reviews, features — bulky, rarely need all
+_LLM_MAX_LIST_ITEMS = 200         # provider search results — LLM must see all to triage
+_LLM_MAX_CONTINUATIONS = 3
+_LLM_CONTINUE_PROMPT = (
+    "Continue exactly where your previous response ended. "
+    "Do not restart and do not repeat text."
+)
 
 
 def _normalize_blocks(content: Any) -> List[Dict[str, Any]]:
@@ -65,6 +68,33 @@ def _normalize_blocks(content: Any) -> List[Dict[str, Any]]:
                 normalized.append(payload)
         return normalized
     return []
+
+
+def _extract_text(content: Any) -> str:
+    """Extract textual content from OpenRouter message.content shapes."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        for key in ("text", "output_text", "content"):
+            value = content.get(key)
+            if value is None:
+                continue
+            text = _extract_text(value)
+            if text:
+                return text
+        return ""
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            text = _extract_text(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts).strip()
+
+    text_attr = getattr(content, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr
+    return str(content) if content is not None else ""
 
 
 def _coerce_tool_payload(result: Any) -> Dict[str, Any]:
@@ -111,7 +141,7 @@ def _summarize_for_model(value: Any, max_depth: int = 2) -> Any:
                     "count": len(item),
                     "sample": [
                         _summarize_for_model(entry, max_depth=max_depth - 1)
-                        for entry in item[:_OPENROUTER_MAX_MEDIA_ITEMS]
+                        for entry in item[:_LLM_MAX_MEDIA_ITEMS]
                     ],
                 }
             elif isinstance(item, list):
@@ -127,10 +157,10 @@ def _summarize_for_model(value: Any, max_depth: int = 2) -> Any:
     if isinstance(value, list):
         compact_items = [
             _summarize_for_model(item, max_depth=max_depth - 1)
-            for item in value[:_OPENROUTER_MAX_LIST_ITEMS]
+            for item in value[:_LLM_MAX_LIST_ITEMS]
         ]
         result: Dict[str, Any] = {"count": len(value)}
-        if len(value) > _OPENROUTER_MAX_LIST_ITEMS:
+        if len(value) > _LLM_MAX_LIST_ITEMS:
             result["truncated"] = True
         result["items"] = compact_items
         return result
@@ -180,11 +210,12 @@ def _infer_state_and_zip(query: str) -> Tuple[str, str | None]:
 def _compact_tool_result(value: Any) -> Any:
     compact = _summarize_for_model(value)
     text = json.dumps(compact, ensure_ascii=False)
-    if len(text) <= _OPENROUTER_TOOL_PAYLOAD_CHARS:
+    if len(text) <= _LLM_TOOL_PAYLOAD_CHARS:
         return compact
-    fallback = {"payload": _compact_scalar(text, _OPENROUTER_TOOL_PAYLOAD_CHARS)}
-    fallback["truncated_length"] = len(text)
-    return fallback
+    return {
+        "payload": _compact_scalar(text, _LLM_TOOL_PAYLOAD_CHARS),
+        "truncated_length": len(text),
+    }
 
 
 def _sanitize_error(exc: Exception) -> str:
@@ -316,9 +347,6 @@ def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"provider_count": provider_count, "flagged": flagged}
 
 
-_MAX_CONTINUATION_NUDGES = 3
-
-
 _REPORT_MARKERS = (
     "INVESTIGATION REPORT",
     "PROVIDER DOSSIERS",
@@ -379,7 +407,7 @@ def _continuation_nudge(
 
     # Count how many times we've already nudged (avoid infinite loops)
     nudge_count = sum(1 for tc in tool_calls if tc.get("tool") == "_nudge")
-    if nudge_count >= _MAX_CONTINUATION_NUDGES:
+    if nudge_count >= _LLM_MAX_CONTINUATIONS:
         return None
 
     # Count total providers from first search and how many have been investigated
@@ -435,7 +463,7 @@ def _continuation_nudge(
     )
 
 
-def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _OPENROUTER_MAX_CONTEXT_CHARS) -> None:
+def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _LLM_MAX_CONTEXT_CHARS) -> None:
     if max_chars <= 0:
         return
     keep_tail = 4
@@ -453,7 +481,7 @@ def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _OP
         messages.pop(2)
 
 
-def _to_openrouter_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _to_openai_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     converted: List[Dict[str, Any]] = []
     for tool in tool_defs:
         converted.append(
@@ -467,6 +495,22 @@ def _to_openrouter_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]
             }
         )
     return converted
+
+
+def _create_openai_client(settings: Any) -> "OpenAI":
+    if OpenAI is None:
+        raise RuntimeError(
+            "The openai package is required for OpenRouter calls. "
+            "Install it with: pip install openai"
+        )
+    return OpenAI(
+        base_url=settings.openrouter_base_url,
+        api_key=settings.openrouter_api_key,
+        default_headers={
+            "HTTP-Referer": settings.openrouter_site_url,
+            "X-Title": settings.openrouter_app_name,
+        },
+    )
 
 
 _MAX_STREET_VIEW_IMAGES = 4
@@ -523,6 +567,60 @@ _REPORT_GENERATION_PROMPT = (
 )
 
 
+def _build_result_payload(
+    *,
+    query: str,
+    mode: str,
+    status: str,
+    narration: InvestigationNarration,
+    assistant_text: List[str],
+    report_text: str,
+    tool_calls: List[Dict[str, Any]],
+    thinking_blocks: List[str],
+    raw_turns: List[Dict[str, Any]],
+    fallback_text: str = "Investigation complete.",
+    **extras: Any,
+) -> Dict[str, Any]:
+    """Assemble the standard investigation result payload."""
+    metrics = _extract_metrics(tool_calls)
+    thinking_analysis = build_thinking_analysis(
+        query=query,
+        report_text=report_text,
+        narration_text=narration.to_markdown(),
+        thinking=thinking_blocks,
+        tool_calls=tool_calls,
+    )
+    payload: Dict[str, Any] = {
+        "query": query,
+        "mode": mode,
+        "status": status,
+        "turns": len(raw_turns),
+        "provider_count": metrics["provider_count"],
+        "flagged": metrics["flagged"],
+        "narration": narration.to_markdown(),
+        "assistant_text": "\n".join(assistant_text) or fallback_text,
+        "report_text": report_text,
+        "tool_calls": tool_calls,
+        "thinking": thinking_blocks,
+        "thinking_analysis": thinking_analysis,
+        "raw_turns": raw_turns,
+    }
+    payload.update(extras)
+    return payload
+
+
+def _parse_tool_arguments(raw: Any) -> Dict[str, Any]:
+    """Parse tool call arguments from string or dict form."""
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
 def _call_tool(name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     handler_map = {
         "search_childcare_providers": search_childcare_providers,
@@ -546,19 +644,17 @@ def _call_tool(name: str, args: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         return "error", {"status": "error", "error": _sanitize_error(exc)}
 
 
-def _run_openrouter_investigation(
+def _run_openai_investigation(
     query: str,
     max_turns: int,
     model: str,
     settings: Any,
 ) -> Dict[str, Any]:
-    if requests is None:
-        raise RuntimeError("requests is required for OpenRouter calls.")
+    client = _create_openai_client(settings)
 
     target_state, target_zip = _infer_state_and_zip(query)
-    url = urljoin(settings.openrouter_base_url.rstrip("/") + "/", "chat/completions")
     tool_defs = get_tool_definitions()
-    openrouter_tools = _to_openrouter_tools(tool_defs)
+    openai_tools = _to_openai_tools(tool_defs)
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": load_system_prompt(target_state=target_state, target_zip=target_zip, max_turns=max_turns)},
         {"role": "user", "content": query},
@@ -581,47 +677,65 @@ def _run_openrouter_investigation(
             if img_msg:
                 request_messages = list(messages) + [img_msg]
 
-        request_payload = {
-            "model": model,
-            "messages": request_messages,
-            "tools": openrouter_tools,
-            "tool_choice": "auto",
-            "max_tokens": settings.max_tokens,
-        }
-        resp = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {settings.openrouter_api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": settings.openrouter_site_url,
-                "X-Title": settings.openrouter_app_name,
-            },
-            json=request_payload,
+        response = client.chat.completions.create(
+            model=model,
+            messages=request_messages,
+            tools=openai_tools,
+            tool_choice="auto",
+            max_tokens=settings.max_tokens,
             timeout=settings.tool_timeout_seconds,
         )
-        if not resp.ok:
-            logger.warning("OpenRouter request failed: %s %s", resp.status_code, resp.text)
-            error_body = resp.text[:500] if resp.text else "no response body"
-            raise RuntimeError(f"OpenRouter request failed: {resp.status_code} — {error_body}")
-
-        completion = resp.json()
-        choice = completion.get("choices", [{}])[0]
-        message = choice.get("message", {})
-        finish_reason = choice.get("finish_reason")
-        assistant_text_block = message.get("content", "")
-        tool_calls_block = message.get("tool_calls", [])
+        choice = response.choices[0]
+        assistant_text_block = _extract_text(choice.message.content).strip()
+        tool_calls_block = choice.message.tool_calls or []
 
         turn_summary = {"turn": turn, "assistant": "", "tool_results": []}
-        if assistant_text_block:
-            turn_summary["assistant"] = str(assistant_text_block).strip()
-            narration.add_narration(str(assistant_text_block))
-            narration.add_assistant_text(str(assistant_text_block))
-            assistant_text.append(str(assistant_text_block))
+        turn_text_chunks: List[str] = []
+        continuation_count = 0
+        while True:
+            if assistant_text_block:
+                turn_text_chunks.append(assistant_text_block)
 
-        assistant_history_entry = {"role": "assistant", "content": assistant_text_block or ""}
-        if tool_calls_block:
-            assistant_history_entry["tool_calls"] = tool_calls_block
-        messages.append(assistant_history_entry)
+            assistant_history_entry: Dict[str, Any] = {"role": "assistant", "content": assistant_text_block or ""}
+            if tool_calls_block:
+                assistant_history_entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in tool_calls_block
+                ]
+            messages.append(assistant_history_entry)
+
+            if tool_calls_block or choice.finish_reason != "length":
+                break
+
+            continuation_count += 1
+            if continuation_count > _LLM_MAX_CONTINUATIONS:
+                logger.warning("LLM assistant text remained truncated after %s continuations (turn %s)", _LLM_MAX_CONTINUATIONS, turn)
+                break
+
+            messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
+            _enforce_context_budget(messages)
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=openai_tools,
+                tool_choice="auto",
+                max_tokens=settings.max_tokens,
+                timeout=settings.tool_timeout_seconds,
+            )
+            choice = response.choices[0]
+            assistant_text_block = _extract_text(choice.message.content).strip()
+            tool_calls_block = choice.message.tool_calls or []
+
+        combined_turn_text = "\n\n".join(chunk for chunk in turn_text_chunks if chunk).strip()
+        if combined_turn_text:
+            turn_summary["assistant"] = combined_turn_text
+            narration.add_narration(combined_turn_text)
+            narration.add_assistant_text(combined_turn_text)
+            assistant_text.append(combined_turn_text)
 
         if not tool_calls_block:
             # Check if the LLM stopped early with providers left to investigate
@@ -637,18 +751,9 @@ def _run_openrouter_investigation(
             raw_turns.append(turn_summary)
             break
 
-        for tool_call in tool_calls_block:
-            tool_name = (tool_call.get("function") or {}).get("name")
-            raw_arguments = (tool_call.get("function") or {}).get("arguments", "{}")
-            if isinstance(raw_arguments, str):
-                try:
-                    arguments = json.loads(raw_arguments)
-                except json.JSONDecodeError:
-                    arguments = {}
-            elif isinstance(raw_arguments, dict):
-                arguments = raw_arguments
-            else:
-                arguments = {}
+        for tc in tool_calls_block:
+            tool_name = tc.function.name
+            arguments = _parse_tool_arguments(tc.function.arguments)
             if not tool_name:
                 continue
             tool_status, result = _call_tool(tool_name, arguments)
@@ -659,7 +764,7 @@ def _run_openrouter_investigation(
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": tool_call.get("id"),
+                    "tool_call_id": tc.id,
                     "name": tool_name,
                     "content": json.dumps(_compact_tool_result(result)),
                 }
@@ -672,12 +777,6 @@ def _run_openrouter_investigation(
 
         raw_turns.append(turn_summary)
 
-        if finish_reason in {"stop", "tool_calls"} and not tool_calls_block:
-            break
-
-        if finish_reason == "stop" and not any(tc.get("function") for tc in tool_calls_block):
-            break
-
     # ── Report generation: one additional LLM call outside the turn budget ──
     report_text_final = ""
     if _report_already_written(assistant_text):
@@ -686,69 +785,61 @@ def _run_openrouter_investigation(
     else:
         _enforce_context_budget(messages)
         messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
-        report_payload = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": settings.max_tokens,
-        }
         try:
-            report_resp = requests.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": settings.openrouter_site_url,
-                    "X-Title": settings.openrouter_app_name,
-                },
-                json=report_payload,
-                timeout=settings.tool_timeout_seconds,
-            )
-            if report_resp.ok:
-                report_completion = report_resp.json()
-                report_choice = report_completion.get("choices", [{}])[0]
-                report_text = report_choice.get("message", {}).get("content", "")
+            report_chunks: List[str] = []
+            report_continuation_count = 0
+            while True:
+                report_response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=settings.max_tokens,
+                    timeout=settings.tool_timeout_seconds,
+                )
+                report_choice = report_response.choices[0]
+                report_text = _extract_text(report_choice.message.content).strip()
+                messages.append({"role": "assistant", "content": report_text or ""})
                 if report_text:
-                    report_text_final = str(report_text)
-                    narration.add_narration(report_text_final)
-                    narration.add_assistant_text(report_text_final)
-                    assistant_text.append(report_text_final)
-                    raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text_final.strip(), "tool_results": []})
+                    report_chunks.append(report_text)
+
+                if report_choice.finish_reason != "length":
+                    break
+
+                report_continuation_count += 1
+                if report_continuation_count > _LLM_MAX_CONTINUATIONS:
+                    logger.warning("LLM report text remained truncated after %s continuations", _LLM_MAX_CONTINUATIONS)
+                    break
+                messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
+                _enforce_context_budget(messages)
+
+            if report_chunks:
+                report_text_final = "\n\n".join(report_chunks).strip()
+                narration.add_narration(report_text_final)
+                narration.add_assistant_text(report_text_final)
+                assistant_text.append(report_text_final)
+                raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text_final.strip(), "tool_results": []})
         except Exception:
             logger.warning("Report generation call failed", exc_info=True)
 
-    metrics = _extract_metrics(tool_calls)
-    thinking_analysis = build_thinking_analysis(
+    return _build_result_payload(
         query=query,
+        mode="agent",
+        status="complete",
+        narration=narration,
+        assistant_text=assistant_text,
         report_text=report_text_final,
-        narration_text=narration.to_markdown(),
-        thinking=thinking_blocks,
         tool_calls=tool_calls,
+        thinking_blocks=thinking_blocks,
+        raw_turns=raw_turns,
     )
-    return {
-        "query": query,
-        "mode": "agent",
-        "status": "complete",
-        "turns": len(raw_turns),
-        "provider_count": metrics["provider_count"],
-        "flagged": metrics["flagged"],
-        "narration": narration.to_markdown(),
-        "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
-        "report_text": report_text_final,
-        "tool_calls": tool_calls,
-        "thinking": thinking_blocks,
-        "thinking_analysis": thinking_analysis,
-        "raw_turns": raw_turns,
-    }
 
 
-def _run_openrouter_investigation_stream(
+def _run_openai_investigation_stream(
     query: str,
     max_turns: int,
     model: str,
     settings: Any,
 ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-    if requests is None:
-        raise RuntimeError("requests is required for OpenRouter calls.")
+    client = _create_openai_client(settings)
 
     target_state, target_zip = _infer_state_and_zip(query)
     yield {
@@ -760,9 +851,8 @@ def _run_openrouter_investigation_stream(
         "max_turns": max_turns,
     }
 
-    url = urljoin(settings.openrouter_base_url.rstrip("/") + "/", "chat/completions")
     tool_defs = get_tool_definitions()
-    openrouter_tools = _to_openrouter_tools(tool_defs)
+    openai_tools = _to_openai_tools(tool_defs)
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": load_system_prompt(target_state=target_state, target_zip=target_zip, max_turns=max_turns)},
         {"role": "user", "content": query},
@@ -787,53 +877,70 @@ def _run_openrouter_investigation_stream(
                 if img_msg:
                     request_messages = list(messages) + [img_msg]
 
-            request_payload = {
-                "model": model,
-                "messages": request_messages,
-                "tools": openrouter_tools,
-                "tool_choice": "auto",
-                "max_tokens": settings.max_tokens,
-            }
-            resp = requests.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": settings.openrouter_site_url,
-                    "X-Title": settings.openrouter_app_name,
-                },
-                json=request_payload,
+            response = client.chat.completions.create(
+                model=model,
+                messages=request_messages,
+                tools=openai_tools,
+                tool_choice="auto",
+                max_tokens=settings.max_tokens,
                 timeout=settings.tool_timeout_seconds,
             )
-            if not resp.ok:
-                logger.warning("OpenRouter request failed: %s %s", resp.status_code, resp.text)
-                error_body = resp.text[:500] if resp.text else "no response body"
-                raise RuntimeError(f"OpenRouter request failed: {resp.status_code} — {error_body}")
-
-            completion = resp.json()
-            choice = completion.get("choices", [{}])[0]
-            message = choice.get("message", {})
-            finish_reason = choice.get("finish_reason")
-            assistant_text_block = message.get("content", "")
-            tool_calls_block = message.get("tool_calls", [])
+            choice = response.choices[0]
+            assistant_text_block = _extract_text(choice.message.content).strip()
+            tool_calls_block = choice.message.tool_calls or []
 
             turn_summary = {"turn": turn, "assistant": "", "tool_results": []}
-            if assistant_text_block:
-                assistant_text_block = str(assistant_text_block).strip()
-                turn_summary["assistant"] = assistant_text_block
-                narration.add_narration(assistant_text_block)
-                narration.add_assistant_text(assistant_text_block)
-                assistant_text.append(assistant_text_block)
-                yield {
-                    "event": "assistant_text",
-                    "turn": turn,
-                    "text": assistant_text_block,
-                }
+            turn_text_chunks: List[str] = []
+            continuation_count = 0
+            while True:
+                if assistant_text_block:
+                    turn_text_chunks.append(assistant_text_block)
+                    yield {
+                        "event": "assistant_text",
+                        "turn": turn,
+                        "text": assistant_text_block,
+                    }
 
-            assistant_history_entry = {"role": "assistant", "content": assistant_text_block or ""}
-            if tool_calls_block:
-                assistant_history_entry["tool_calls"] = tool_calls_block
-            messages.append(assistant_history_entry)
+                assistant_history_entry: Dict[str, Any] = {"role": "assistant", "content": assistant_text_block or ""}
+                if tool_calls_block:
+                    assistant_history_entry["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                        }
+                        for tc in tool_calls_block
+                    ]
+                messages.append(assistant_history_entry)
+
+                if tool_calls_block or choice.finish_reason != "length":
+                    break
+
+                continuation_count += 1
+                if continuation_count > _LLM_MAX_CONTINUATIONS:
+                    logger.warning("LLM assistant text remained truncated after %s continuations (turn %s)", _LLM_MAX_CONTINUATIONS, turn)
+                    break
+
+                messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
+                _enforce_context_budget(messages)
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=openai_tools,
+                    tool_choice="auto",
+                    max_tokens=settings.max_tokens,
+                    timeout=settings.tool_timeout_seconds,
+                )
+                choice = response.choices[0]
+                assistant_text_block = _extract_text(choice.message.content).strip()
+                tool_calls_block = choice.message.tool_calls or []
+
+            combined_turn_text = "\n\n".join(chunk for chunk in turn_text_chunks if chunk).strip()
+            if combined_turn_text:
+                turn_summary["assistant"] = combined_turn_text
+                narration.add_narration(combined_turn_text)
+                narration.add_assistant_text(combined_turn_text)
+                assistant_text.append(combined_turn_text)
 
             if not tool_calls_block:
                 nudge = _continuation_nudge(
@@ -849,18 +956,9 @@ def _run_openrouter_investigation_stream(
                 raw_turns.append(turn_summary)
                 break
 
-            for tool_call in tool_calls_block:
-                tool_name = (tool_call.get("function") or {}).get("name")
-                raw_arguments = (tool_call.get("function") or {}).get("arguments", "{}")
-                if isinstance(raw_arguments, str):
-                    try:
-                        arguments = json.loads(raw_arguments)
-                    except json.JSONDecodeError:
-                        arguments = {}
-                elif isinstance(raw_arguments, dict):
-                    arguments = raw_arguments
-                else:
-                    arguments = {}
+            for tc in tool_calls_block:
+                tool_name = tc.function.name
+                arguments = _parse_tool_arguments(tc.function.arguments)
                 if not tool_name:
                     continue
 
@@ -894,7 +992,7 @@ def _run_openrouter_investigation_stream(
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tool_call.get("id"),
+                        "tool_call_id": tc.id,
                         "name": tool_name,
                         "content": json.dumps(_compact_tool_result(result)),
                     }
@@ -916,12 +1014,6 @@ def _run_openrouter_investigation_stream(
             raw_turns.append(turn_summary)
             yield {"event": "turn_done", "turn": turn, "tools": [item["tool"] for item in turn_summary["tool_results"]]}
 
-            if finish_reason in {"stop", "tool_calls"} and not tool_calls_block:
-                break
-
-            if finish_reason == "stop" and not any(tc.get("function") for tc in tool_calls_block):
-                break
-
         # ── Report generation: one additional LLM call outside the turn budget ──
         report_text_final = ""
         if _report_already_written(assistant_text):
@@ -931,94 +1023,76 @@ def _run_openrouter_investigation_stream(
             yield {"event": "report_start"}
             _enforce_context_budget(messages)
             messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
-            report_payload = {
-                "model": model,
-                "messages": messages,
-                "max_tokens": settings.max_tokens,
-            }
             try:
-                report_resp = requests.post(
-                    url,
-                    headers={
-                        "Authorization": f"Bearer {settings.openrouter_api_key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": settings.openrouter_site_url,
-                        "X-Title": settings.openrouter_app_name,
-                    },
-                    json=report_payload,
-                    timeout=settings.tool_timeout_seconds,
-                )
-                if report_resp.ok:
-                    report_completion = report_resp.json()
-                    report_choice = report_completion.get("choices", [{}])[0]
-                    report_text = report_choice.get("message", {}).get("content", "")
+                report_chunks: List[str] = []
+                report_continuation_count = 0
+                while True:
+                    report_response = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        max_tokens=settings.max_tokens,
+                        timeout=settings.tool_timeout_seconds,
+                    )
+                    report_choice = report_response.choices[0]
+                    report_text = _extract_text(report_choice.message.content).strip()
+                    messages.append({"role": "assistant", "content": report_text or ""})
                     if report_text:
-                        report_text_final = str(report_text)
-                        narration.add_narration(report_text_final)
-                        narration.add_assistant_text(report_text_final)
-                        assistant_text.append(report_text_final)
-                        raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text_final.strip(), "tool_results": []})
-                        yield {"event": "assistant_text", "turn": len(raw_turns), "text": report_text_final.strip()}
+                        report_chunks.append(report_text)
+                        yield {"event": "assistant_text", "turn": len(raw_turns) + 1, "text": report_text}
+
+                    if report_choice.finish_reason != "length":
+                        break
+
+                    report_continuation_count += 1
+                    if report_continuation_count > _LLM_MAX_CONTINUATIONS:
+                        logger.warning("LLM report text remained truncated after %s continuations", _LLM_MAX_CONTINUATIONS)
+                        break
+                    messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
+                    _enforce_context_budget(messages)
+
+                if report_chunks:
+                    report_text_final = "\n\n".join(report_chunks).strip()
+                    narration.add_narration(report_text_final)
+                    narration.add_assistant_text(report_text_final)
+                    assistant_text.append(report_text_final)
+                    raw_turns.append({"turn": len(raw_turns) + 1, "assistant": report_text_final.strip(), "tool_results": []})
             except Exception:
                 logger.warning("Report generation call failed", exc_info=True)
 
-        metrics = _extract_metrics(tool_calls)
-        thinking_analysis = build_thinking_analysis(
+        result_payload = _build_result_payload(
             query=query,
+            mode="agent",
+            status="complete",
+            narration=narration,
+            assistant_text=assistant_text,
             report_text=report_text_final,
-            narration_text=narration.to_markdown(),
-            thinking=thinking_blocks,
             tool_calls=tool_calls,
+            thinking_blocks=thinking_blocks,
+            raw_turns=raw_turns,
         )
-        result_payload = {
-            "query": query,
-            "mode": "agent",
-            "status": "complete",
-            "turns": len(raw_turns),
-            "provider_count": metrics["provider_count"],
-            "flagged": metrics["flagged"],
-            "narration": narration.to_markdown(),
-            "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
-            "report_text": report_text_final,
-            "tool_calls": tool_calls,
-            "thinking": thinking_blocks,
-            "thinking_analysis": thinking_analysis,
-            "raw_turns": raw_turns,
-        }
         yield {"event": "complete", "payload": result_payload}
         return result_payload
 
     except Exception as exc:
-        logger.warning("Streaming OpenRouter investigation failed for query %s: %s", query, exc, exc_info=True)
+        logger.warning("Streaming OpenAI investigation failed for query %s: %s", query, exc, exc_info=True)
         yield {
             "event": "error",
             "error": _sanitize_error(exc),
             "query": query,
         }
-        metrics = _extract_metrics(tool_calls)
-        thinking_analysis = build_thinking_analysis(
+        result_payload = _build_result_payload(
             query=query,
+            mode="agent",
+            status="error",
+            narration=narration,
+            assistant_text=assistant_text,
             report_text="",
-            narration_text=narration.to_markdown(),
-            thinking=thinking_blocks,
             tool_calls=tool_calls,
+            thinking_blocks=thinking_blocks,
+            raw_turns=raw_turns,
+            fallback_text="Investigation failed.",
+            error=_sanitize_error(exc),
         )
-        result_payload = {
-            "query": query,
-            "mode": "agent",
-            "status": "error",
-            "turns": len(raw_turns),
-            "provider_count": metrics["provider_count"],
-            "flagged": metrics["flagged"],
-            "narration": narration.to_markdown(),
-            "assistant_text": "\n".join(assistant_text) or "Investigation failed.",
-            "report_text": "",
-            "tool_calls": tool_calls,
-            "thinking": thinking_blocks,
-            "thinking_analysis": thinking_analysis,
-            "raw_turns": raw_turns,
-            "error": _sanitize_error(exc),
-        }
         yield {"event": "complete", "payload": result_payload}
         return result_payload
 
@@ -1353,7 +1427,7 @@ def run_investigation(
     if settings.llm_provider == "openrouter":
         if not settings.openrouter_api_key:
             raise RuntimeError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter.")
-        result = _run_openrouter_investigation(
+        result = _run_openai_investigation(
             query,
             max_turns=max_turns,
             model=model or settings.model,
@@ -1449,29 +1523,17 @@ def run_investigation(
             except Exception:
                 logger.warning("Anthropic report generation call failed", exc_info=True)
 
-        metrics = _extract_metrics(tool_calls)
-        thinking_analysis = build_thinking_analysis(
+        result = _build_result_payload(
             query=query,
+            mode="agent",
+            status="complete",
+            narration=narration,
+            assistant_text=assistant_text,
             report_text=report_text_final,
-            narration_text=narration.to_markdown(),
-            thinking=thinking_blocks,
             tool_calls=tool_calls,
+            thinking_blocks=thinking_blocks,
+            raw_turns=raw_turns,
         )
-        result = {
-            "query": query,
-            "mode": "agent",
-            "status": "complete",
-            "turns": len(raw_turns),
-            "provider_count": metrics["provider_count"],
-            "flagged": metrics["flagged"],
-            "narration": narration.to_markdown(),
-            "assistant_text": "\n".join(assistant_text) or "Investigation complete.",
-            "report_text": report_text_final,
-            "tool_calls": tool_calls,
-            "thinking": thinking_blocks,
-            "thinking_analysis": thinking_analysis,
-            "raw_turns": raw_turns,
-        }
     else:
         raise RuntimeError(f"Unknown LLM_PROVIDER '{settings.llm_provider}'. Set LLM_PROVIDER=anthropic or openrouter.")
 
@@ -1497,7 +1559,7 @@ def run_investigation_stream(
         if settings.llm_provider == "openrouter":
             if not settings.openrouter_api_key:
                 raise RuntimeError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter.")
-            yield from _run_openrouter_investigation_stream(
+            yield from _run_openai_investigation_stream(
                 query,
                 max_turns=max_turns,
                 model=model or settings.model,
