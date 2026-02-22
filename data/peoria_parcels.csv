@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+324 Main St,IL,Peoria,2400,5200,C1,Commercial,1991
+1400 W Glen Ave,IL,Peoria,1300,3600,R1,Residential,1958
+4620 N University St,IL,Peoria,3800,8500,C2,Commercial,2004

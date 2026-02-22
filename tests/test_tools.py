@@ -222,6 +222,70 @@ def test_get_property_data_cook_live_passes_pin(monkeypatch):
     assert result["building_sqft"] == 2234.0
 
 
+def test_resolve_county_mn_from_geocoder(monkeypatch):
+    """MN county resolution should derive county from Census geographies API."""
+    from tools import property as prop_mod
+
+    prop_mod._MN_COUNTY_GEOCODE_CACHE.clear()
+
+    def mock_get(url, params=None, timeout=None, headers=None):
+        class MockResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "result": {
+                        "addressMatches": [
+                            {
+                                "geographies": {
+                                    "Counties": [
+                                        {"NAME": "Olmsted County"}
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+
+        return MockResp()
+
+    monkeypatch.setattr(prop_mod.requests, "get", mock_get)
+    county = prop_mod._resolve_county("123 Main St, Rochester, MN 55901", county=None, state="MN")
+    assert county == "Olmsted"
+
+
+def test_get_property_data_mn_uses_county_module_dispatch(monkeypatch):
+    """When MN county resolves and a county module exists, dispatch should use it."""
+    from tools import property as prop_mod
+
+    class MockCountyModule:
+        source_label = "live_mn_open_parcels"
+        fallback_csv = None
+
+        def query(self, address):
+            return {
+                "address": "500 Main St, Burnsville, MN 55337",
+                "building_sqft": 4321.0,
+                "lot_size": "25000",
+                "property_class": "Commercial",
+                "year_built": 1999,
+                "owner_name": "Example Owner",
+                "building_sqft_source": "county_assessor",
+                "building_sqft_confidence": "high",
+            }
+
+    monkeypatch.setattr(prop_mod, "_resolve_county", lambda address, county, state: "Dakota")
+    monkeypatch.setattr(prop_mod, "_get_county_module", lambda state_key, county_name: MockCountyModule())
+
+    result = prop_mod.get_property_data("500 Main St, Burnsville, MN 55337", state="MN", offline=False)
+    assert result["status"] == "found"
+    assert result["source"] == "live_mn_open_parcels"
+    assert result["county"] == "Dakota"
+    assert result["building_sqft"] == 4321.0
+    assert result["building_sqft_source"] == "county_assessor"
+
+
 def test_get_property_data_live_not_found_does_not_use_fixture(monkeypatch):
     """Online mode should return live not_found, not fixture CSV fallback, on clean no-match."""
     from tools import property as prop_mod

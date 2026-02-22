@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+100 N Virginia St,IL,McHenry,2200,5800,C1,Commercial,1992
+2200 N Richmond Rd,IL,McHenry,1600,4500,R1,Residential,1978
+667 Ware Rd,IL,McHenry,3800,8000,C2,Commercial,2001

@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+102 E Main St,IL,Champaign,2800,5400,C1,Commercial,1993
+505 S Neil St,IL,Champaign,1100,3200,R1,Residential,1955
+1901 S 1st St,IL,Champaign,4200,9500,C2,Commercial,2006

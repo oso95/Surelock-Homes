@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+300 S 7th St,IL,Sangamon,3200,6000,C1,Commercial,1989
+1200 S Grand Ave,IL,Sangamon,1400,4000,R1,Residential,1971
+2501 Wabash Ave,IL,Sangamon,5000,11000,C2,Commercial,2000

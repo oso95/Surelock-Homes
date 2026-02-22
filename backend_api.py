@@ -85,6 +85,31 @@ def tool_definitions() -> List[Dict[str, Any]]:
     return get_tool_definitions()
 
 
+@app.get("/api/coverage")
+def coverage() -> Dict[str, Any]:
+    """Expose live state/county coverage for the frontend scope builder."""
+    from tools.counties import get_counties_for_state
+
+    state_names = {
+        "IL": "Illinois",
+        "MN": "Minnesota",
+    }
+    county_coverage: Dict[str, Dict[str, Any]] = {}
+
+    for state_code, state_name in state_names.items():
+        counties = sorted({mod.county_name for mod in get_counties_for_state(state_code)})
+        county_coverage[state_code] = {
+            "state_name": state_name,
+            "counties": counties,
+            "count": len(counties),
+        }
+
+    return {
+        "provider_states": sorted(state_names.keys()),
+        "property_county_coverage": county_coverage,
+    }
+
+
 @app.post("/api/investigate")
 def investigate(payload: InvestigateRequest, request: Request) -> Any:
     client_ip = request.client.host if request.client else "unknown"

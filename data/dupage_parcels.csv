@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+421 N County Farm Rd,IL,DuPage,3200,5400,C1,Commercial,1985
+1S280 Summit Ave,IL,DuPage,1800,7200,R1,Residential,1972
+200 S Main St,IL,DuPage,2400,4000,C2,Commercial,1998

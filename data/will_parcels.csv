@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+150 N Scott St,IL,Will,3000,5200,C1,Commercial,1995
+2001 W Jefferson St,IL,Will,1200,3800,R1,Residential,1980
+501 Ella Ave,IL,Will,1600,4000,R2,Residential,1975

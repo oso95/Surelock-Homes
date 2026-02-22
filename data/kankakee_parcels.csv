@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+189 E Court St,IL,Kankakee,2200,4800,C1,Commercial,1986
+1200 W Station St,IL,Kankakee,1100,3400,R1,Residential,1960
+501 N Washington Ave,IL,Kankakee,3600,7800,C2,Commercial,2001

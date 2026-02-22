@@ -5,10 +5,35 @@ from tools.licensing import LICENSING_REGISTRY
 from tools.capacity import CAPACITY_REGISTRY
 
 
+def _county_description_suffix() -> str:
+    """Build a description suffix listing available counties from the registry."""
+    try:
+        from tools.counties import get_county_registry
+        registry = get_county_registry()
+        by_state: dict[str, list[str]] = {}
+        for (state, county), _mod in sorted(registry.items()):
+            by_state.setdefault(state, []).append(county.title())
+        parts = []
+        for state in sorted(by_state):
+            counties = ", ".join(by_state[state])
+            parts.append(f"{state}: {counties}")
+        if parts:
+            return " Supported counties: " + "; ".join(parts) + "."
+    except Exception:
+        pass
+    return ""
+
+
 def get_tool_definitions():
     provider_states = sorted(PROVIDER_REGISTRY.keys())
     licensing_states = sorted(LICENSING_REGISTRY.keys())
     capacity_states = sorted(CAPACITY_REGISTRY.keys())
+
+    property_desc = (
+        "Get building and parcel data for a specific address from county GIS records. "
+        "Returns building square footage, lot size, zoning classification, property class, and year built."
+        + _county_description_suffix()
+    )
 
     return [
         {
@@ -27,12 +52,12 @@ def get_tool_definitions():
         },
         {
             "name": "get_property_data",
-            "description": "Get building and parcel data for a specific address from county GIS records. Returns building square footage, lot size, zoning classification, property class, and year built.",
+            "description": property_desc,
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "address": {"type": "string", "description": "Full street address"},
-                    "county": {"type": "string", "description": "County name (optional, helps with lookup)"},
+                    "county": {"type": "string", "description": "County name (optional, auto-resolved from ZIP when possible)"},
                     "state": {"type": "string"},
                 },
                 "required": ["address", "state"],

@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+111 W Fox St,IL,Kendall,2000,4800,C1,Commercial,1996
+800 S Bridge St,IL,Kendall,1300,3200,R1,Residential,1970
+200 Countryside Pkwy,IL,Kendall,4500,10000,C2,Commercial,2008

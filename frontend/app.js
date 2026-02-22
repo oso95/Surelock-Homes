@@ -4,6 +4,10 @@
 
 const runBtn = document.getElementById("runBtn");
 const queryInput = document.getElementById("query");
+const scopeState = document.getElementById("scopeState");
+const scopeCounty = document.getElementById("scopeCounty");
+const applyScopeBtn = document.getElementById("applyScopeBtn");
+const scopeSummary = document.getElementById("scopeSummary");
 const offlineToggle = document.getElementById("offlineToggle");
 const modeHint = document.getElementById("modeHint");
 const turnsRange = document.getElementById("turnsRange");
@@ -34,6 +38,8 @@ const timelineList = document.getElementById("timelineList");
 
 const historyList = document.getElementById("historyList");
 const clearHistoryBtn = document.getElementById("clearHistoryBtn");
+const propertyCoverageValue = document.getElementById("propertyCoverageValue");
+const providerCoverageValue = document.getElementById("providerCoverageValue");
 
 const tabBtnReport = document.getElementById("tabBtnReport");
 const tabBtnInvestigation = document.getElementById("tabBtnInvestigation");
@@ -250,15 +256,221 @@ function renderMarkdown(md) {
 }
 
 /* ==========================================================================
-   Preset Buttons & Controls
+   Scope Builder & Controls
    ========================================================================== */
 
-document.querySelectorAll(".preset-btn").forEach((button) => {
-  button.addEventListener("click", () => {
-    const preset = button.getAttribute("data-query");
-    if (preset) queryInput.value = preset;
+const STATE_LABELS = {
+  IL: "Illinois",
+  MN: "Minnesota",
+};
+
+const FALLBACK_COVERAGE = {
+  provider_states: ["IL", "MN"],
+  property_county_coverage: {
+    IL: {
+      state_name: "Illinois",
+      counties: [
+        "Champaign",
+        "Cook",
+        "DeKalb",
+        "DuPage",
+        "Kane",
+        "Kankakee",
+        "Kendall",
+        "Lake",
+        "McHenry",
+        "McLean",
+        "Peoria",
+        "Sangamon",
+        "Will",
+        "Winnebago",
+      ],
+    },
+    MN: {
+      state_name: "Minnesota",
+      counties: [
+        "Anoka",
+        "Carver",
+        "Dakota",
+        "Hennepin",
+        "Olmsted",
+        "Ramsey",
+        "Scott",
+        "Sherburne",
+        "St. Louis",
+        "Stearns",
+        "Washington",
+        "Wright",
+      ],
+    },
+  },
+};
+
+let coverageData = FALLBACK_COVERAGE;
+
+function getStateCoverage(stateCode) {
+  return coverageData?.property_county_coverage?.[stateCode] || null;
+}
+
+function getStateName(stateCode) {
+  const covered = getStateCoverage(stateCode);
+  return covered?.state_name || STATE_LABELS[stateCode] || stateCode;
+}
+
+function buildScopeQuery(stateCode, countyValue) {
+  const stateName = getStateName(stateCode);
+  const counties = getStateCoverage(stateCode)?.counties || [];
+
+  if (!counties.length) {
+    return `Investigate ${stateName} childcare providers and produce a comprehensive anomaly report with flagged and cleared providers.`;
+  }
+
+  if (countyValue === "__ALL__") {
+    return `Investigate ${stateName} childcare providers across all covered counties (${counties.join(", ")}). Use county property/GIS cross-reference where available, prioritize high-risk anomalies, and produce a comprehensive report with flagged and cleared providers.`;
+  }
+
+  return `Investigate ${stateName} childcare providers in ${countyValue} County. Use county property/GIS cross-reference where available, prioritize high-risk anomalies, and produce a comprehensive report with flagged and cleared providers.`;
+}
+
+function populateStateOptions() {
+  if (!scopeState) return;
+
+  const options = Object.keys(coverageData.property_county_coverage || {});
+  const ordered = ["IL", "MN"].filter((code) => options.includes(code));
+  options.forEach((code) => {
+    if (!ordered.includes(code)) ordered.push(code);
   });
+
+  scopeState.innerHTML = "";
+  ordered.forEach((code) => {
+    const option = document.createElement("option");
+    option.value = code;
+    option.textContent = `${getStateName(code)} (${code})`;
+    scopeState.appendChild(option);
+  });
+}
+
+function populateCountyOptions(stateCode) {
+  if (!scopeCounty) return;
+  const counties = getStateCoverage(stateCode)?.counties || [];
+
+  scopeCounty.innerHTML = "";
+
+  const allOption = document.createElement("option");
+  allOption.value = "__ALL__";
+  allOption.textContent = `All covered counties (${counties.length})`;
+  scopeCounty.appendChild(allOption);
+
+  counties.forEach((county) => {
+    const option = document.createElement("option");
+    option.value = county;
+    option.textContent = `${county} County`;
+    scopeCounty.appendChild(option);
+  });
+}
+
+function updateScopeSummary() {
+  if (!scopeSummary || !scopeState || !scopeCounty) return;
+
+  const stateCode = scopeState.value;
+  const countyValue = scopeCounty.value;
+  const stateName = getStateName(stateCode);
+  const countyCount = getStateCoverage(stateCode)?.counties?.length || 0;
+
+  if (countyValue === "__ALL__") {
+    scopeSummary.textContent = `Scope: ${stateName} statewide county sweep (${countyCount} counties).`;
+    return;
+  }
+  scopeSummary.textContent = `Scope: ${countyValue} County, ${stateName}.`;
+}
+
+function updateCoverageNotes() {
+  if (propertyCoverageValue) {
+    const parts = [];
+    ["IL", "MN"].forEach((stateCode) => {
+      const counties = getStateCoverage(stateCode)?.counties || [];
+      if (counties.length) {
+        parts.push(`${stateCode}: ${counties.length} counties`);
+      }
+    });
+    propertyCoverageValue.textContent = parts.length
+      ? parts.join(" | ")
+      : "County coverage unavailable";
+  }
+
+  if (providerCoverageValue) {
+    const providerStates = Array.isArray(coverageData.provider_states)
+      ? coverageData.provider_states
+      : ["IL", "MN"];
+    const names = providerStates.map((code) => getStateName(code));
+    if (names.length === 2) {
+      providerCoverageValue.textContent = `Statewide in ${names[0]} and ${names[1]}`;
+    } else {
+      providerCoverageValue.textContent = `Statewide in ${names.join(", ")}`;
+    }
+  }
+}
+
+function applyScopeToPrompt() {
+  if (!scopeState || !scopeCounty || !queryInput) return;
+  queryInput.value = buildScopeQuery(scopeState.value, scopeCounty.value);
+}
+
+function initScopeBuilder() {
+  if (!scopeState || !scopeCounty) return;
+
+  populateStateOptions();
+  if (scopeState.options.length > 0) {
+    scopeState.value = scopeState.value || scopeState.options[0].value;
+  }
+  populateCountyOptions(scopeState.value);
+  scopeCounty.value = "__ALL__";
+  updateScopeSummary();
+  updateCoverageNotes();
+
+  if (!queryInput.value.trim()) {
+    applyScopeToPrompt();
+  }
+}
+
+scopeState?.addEventListener("change", () => {
+  populateCountyOptions(scopeState.value);
+  scopeCounty.value = "__ALL__";
+  updateScopeSummary();
+  applyScopeToPrompt();
 });
+
+scopeCounty?.addEventListener("change", () => {
+  updateScopeSummary();
+  applyScopeToPrompt();
+});
+
+applyScopeBtn?.addEventListener("click", () => {
+  applyScopeToPrompt();
+  setStatusText("Prompt updated from selected scope.");
+});
+
+async function loadCoverage() {
+  try {
+    const response = await fetch("/api/coverage");
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    const hasCoverage =
+      payload &&
+      payload.property_county_coverage &&
+      payload.property_county_coverage.IL &&
+      payload.property_county_coverage.MN;
+    if (hasCoverage) {
+      coverageData = payload;
+    }
+  } catch (error) {
+    // Keep fallback coverage silently.
+  } finally {
+    initScopeBuilder();
+  }
+}
 
 turnsRange.addEventListener("input", () => {
   turnsValue.textContent = String(turnsRange.value);
@@ -1036,6 +1248,7 @@ clearHistoryBtn.addEventListener("click", () => {
 restoreModePreference();
 turnsValue.textContent = turnsRange.value;
 checkConnection();
+loadCoverage();
 renderHistory();
 showEmpty();
 

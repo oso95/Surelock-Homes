@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+404 Elm St,IL,Winnebago,2600,5000,C1,Commercial,1987
+1100 N Main St,IL,Winnebago,1200,3500,R1,Residential,1962
+5550 E State St,IL,Winnebago,6800,15000,C3,Commercial,2003

@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+200 N Main St,IL,McLean,2600,5600,C1,Commercial,1994
+1500 E Empire St,IL,McLean,1500,4200,R1,Residential,1966
+2401 E Washington St,IL,McLean,4000,9200,C2,Commercial,2007

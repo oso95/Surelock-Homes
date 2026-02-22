@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+18 N County St,IL,Lake,2500,6000,C1,Commercial,1990
+500 Grand Ave,IL,Lake,1400,4200,R1,Residential,1968
+1000 N Milwaukee Ave,IL,Lake,4800,9000,C2,Commercial,2002

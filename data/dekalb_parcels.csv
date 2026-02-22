@@ -1,0 +1,4 @@
+address,state,county,building_sqft,lot_size,zoning,property_class,year_built
+200 N 1st St,IL,DeKalb,2000,4600,C1,Commercial,1990
+1050 W Lincoln Hwy,IL,DeKalb,1200,3500,R1,Residential,1957
+2550 N Annie Glidden Rd,IL,DeKalb,5500,12000,C3,Commercial,2009

@@ -1,5 +1,115 @@
 [
   {
+    "id": "20260222T233848Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
+    "mode": "offline",
+    "status": "complete",
+    "turns": 3,
+    "provider_count": 3,
+    "flags": 2,
+    "timestamp": "2026-02-22 23:38 UTC"
+  },
+  {
+    "id": "20260222T231657Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
+    "mode": "offline",
+    "status": "complete",
+    "turns": 3,
+    "provider_count": 3,
+    "flags": 2,
+    "timestamp": "2026-02-22 23:16 UTC"
+  },
+  {
+    "id": "20260222T155751Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
+    "mode": "offline",
+    "status": "complete",
+    "turns": 3,
+    "provider_count": 3,
+    "flags": 2,
+    "timestamp": "2026-02-22 15:57 UTC"
+  },
+  {
+    "id": "20260222T155635Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
+    "mode": "offline",
+    "status": "complete",
+    "turns": 3,
+    "provider_count": 3,
+    "flags": 2,
+    "timestamp": "2026-02-22 15:56 UTC"
+  },
+  {
+    "id": "20260222T154828Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
+    "mode": "offline",
+    "status": "complete",
+    "turns": 3,
+    "provider_count": 3,
+    "flags": 2,
+    "timestamp": "2026-02-22 15:48 UTC"
+  },
+  {
+    "id": "20260222T154712Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
+    "mode": "offline",
+    "status": "complete",
+    "turns": 3,
+    "provider_count": 3,
+    "flags": 2,
+    "timestamp": "2026-02-22 15:47 UTC"
+  },
+  {
+    "id": "20260222T154312Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
+    "mode": "offline",
+    "status": "complete",
+    "turns": 3,
+    "provider_count": 3,
+    "flags": 2,
+    "timestamp": "2026-02-22 15:43 UTC"
+  },
+  {
+    "id": "20260222T154011Z",
+    "query": "Investigate Illinois providers in ZIP 60612",
+    "mode": "offline",
+    "status": "complete",
+    "turns": 3,
+    "provider_count": 3,
+    "flags": 2,
+    "timestamp": "2026-02-22 15:40 UTC"
+  },
+  {
+    "id": "20260221T021415Z",
+    "query": "Investigate all seven child care centers providers in ZIP 55443 MN. Please do a detail review of every single one",
+    "mode": "agent",
+    "status": "complete",
+    "turns": 21,
+    "provider_count": 40,
+    "flags": 12,
+    "timestamp": "2026-02-21 02:14 UTC"
+  },
+  {
+    "id": "20260221T011852Z",
+    "query": "Investigate Minnesota providers in ZIP 55443",
+    "mode": "agent",
+    "status": "complete",
+    "turns": 15,
+    "provider_count": 40,
+    "flags": 12,
+    "timestamp": "2026-02-21 01:18 UTC"
+  },
+  {
+    "id": "20260221T001303Z",
+    "query": "Investigate Minnesota providers in ZIP 55407",
+    "mode": "agent",
+    "status": "complete",
+    "turns": 16,
+    "provider_count": 58,
+    "flags": 27,
+    "timestamp": "2026-02-21 00:13 UTC"
+  },
+  {
     "id": "20260220T234021Z",
     "query": "Investigate Minnesota providers in ZIP 55429",
     "mode": "agent",
