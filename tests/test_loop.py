@@ -157,6 +157,239 @@ def test_ensure_report_text_synthesizes_when_missing():
     assert "PROVIDER DOSSIERS" in report
 
 
+def test_ensure_report_text_falls_back_on_total_provider_mismatch():
+    tool_calls = [
+        {
+            "tool": "search_childcare_providers",
+            "arguments": {},
+            "status": "ok",
+            "result": [
+                {"name": f"Provider {i}", "address": f"{i} Main St", "capacity": 10}
+                for i in range(5)
+            ],
+        }
+    ]
+
+    mismatched_report = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "SURELOCK_METRICS: {\"provider_count\": 3, \"flagged_count\": 0}\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "The investigation began with a search returning **3 providers** in total.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "No major outliers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "No strong clusters.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Moderate confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Limited exposure.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Follow up.\n\n"
+        "SURELOCK_FINDINGS_JSON_START\n"
+        "[]\n"
+        "SURELOCK_FINDINGS_JSON_END"
+    )
+
+    report = _ensure_report_text(
+        mode="agent",
+        query="Investigate Illinois providers in Champaign County",
+        report_text=mismatched_report,
+        assistant_text=[],
+        raw_turns=[{"turn": 1, "assistant": "Investigating providers...", "tool_results": []}],
+        tool_calls=tool_calls,
+    )
+
+    assert "Providers identified in primary search: 5." in report
+    assert "returning **3 providers** in total" not in report
+
+
+def test_ensure_report_text_keeps_matching_total_provider_count():
+    tool_calls = [
+        {
+            "tool": "search_childcare_providers",
+            "arguments": {},
+            "status": "ok",
+            "result": [
+                {"name": f"Provider {i}", "address": f"{i} Main St", "capacity": 10}
+                for i in range(5)
+            ],
+        }
+    ]
+
+    matching_report = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "SURELOCK_METRICS: {\"provider_count\": 5, \"flagged_count\": 0}\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "The investigation began with a search returning **5 providers** in total.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "No major outliers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "No strong clusters.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Moderate confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Limited exposure.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Follow up.\n\n"
+        "SURELOCK_FINDINGS_JSON_START\n"
+        "[]\n"
+        "SURELOCK_FINDINGS_JSON_END"
+    )
+
+    report = _ensure_report_text(
+        mode="agent",
+        query="Investigate Illinois providers in Champaign County",
+        report_text=matching_report,
+        assistant_text=[],
+        raw_turns=[{"turn": 1, "assistant": "Investigating providers...", "tool_results": []}],
+        tool_calls=tool_calls,
+    )
+
+    assert "returning **5 providers** in total" in report
+    assert "SURELOCK_METRICS" not in report
+    assert "SURELOCK_FINDINGS_JSON_START" not in report
+
+
+def test_ensure_report_bundle_filters_findings_without_provider_evidence():
+    tool_calls = [
+        {
+            "tool": "search_childcare_providers",
+            "arguments": {},
+            "status": "ok",
+            "result": [
+                {
+                    "name": "Real Provider",
+                    "address": "100 Main St, Chicago, IL 60612",
+                    "capacity": 40,
+                    "license_type": "Day Care Center",
+                    "status": "Active",
+                    "state": "IL",
+                }
+            ],
+        }
+    ]
+
+    report_with_unmatched_finding = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "SURELOCK_METRICS: {\"provider_count\": 1, \"flagged_count\": 2}\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "Narrative.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "Dossiers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "Patterns.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Estimate.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Recommendations.\n\n"
+        "SURELOCK_FINDINGS_JSON_START\n"
+        "[\n"
+        "  {\"provider_name\": \"Real Provider\", \"address\": \"100 Main St, Chicago, IL 60612\", \"flag_type\": \"model_anomaly\", \"flag\": \"Test\"},\n"
+        "  {\"provider_name\": \"Superior Kids Learning Center\", \"address\": \"3847 W Chicago Ave, Chicago, IL 60651\", \"flag_type\": \"model_anomaly\", \"flag\": \"Unexpected\"}\n"
+        "]\n"
+        "SURELOCK_FINDINGS_JSON_END"
+    )
+
+    report, findings = loop_mod._ensure_report_bundle(
+        mode="agent",
+        query="Investigate Illinois providers in ZIP 60612",
+        report_text=report_with_unmatched_finding,
+        assistant_text=[],
+        raw_turns=[{"turn": 1, "assistant": "Investigating providers...", "tool_results": []}],
+        tool_calls=tool_calls,
+    )
+
+    assert "SURELOCK HOMES INVESTIGATION REPORT" in report
+    assert len(findings) == 1
+    assert findings[0]["provider_name"] == "Real Provider"
+    assert findings[0]["address"] == "100 Main St, Chicago, IL 60612"
+
+
+def test_ensure_report_text_falls_back_when_findings_block_missing():
+    tool_calls = [
+        {
+            "tool": "search_childcare_providers",
+            "arguments": {},
+            "status": "ok",
+            "result": [
+                {"name": f"Provider {i}", "address": f"{i} Main St", "capacity": 10}
+                for i in range(5)
+            ],
+        }
+    ]
+
+    no_findings_block_report = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "SURELOCK_METRICS: {\"provider_count\": 5, \"flagged_count\": 0}\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "The investigation began with a search returning **5 providers** in total.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "No major outliers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "No strong clusters.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Moderate confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Limited exposure.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Follow up."
+    )
+
+    report = _ensure_report_text(
+        mode="agent",
+        query="Investigate Illinois providers in Champaign County",
+        report_text=no_findings_block_report,
+        assistant_text=[],
+        raw_turns=[{"turn": 1, "assistant": "Investigating providers...", "tool_results": []}],
+        tool_calls=tool_calls,
+    )
+
+    assert "Providers identified in primary search: 5." in report
+
+
+def test_ensure_report_text_falls_back_when_metadata_missing():
+    tool_calls = [
+        {
+            "tool": "search_childcare_providers",
+            "arguments": {},
+            "status": "ok",
+            "result": [
+                {"name": f"Provider {i}", "address": f"{i} Main St", "capacity": 10}
+                for i in range(5)
+            ],
+        }
+    ]
+
+    no_metadata_report = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "The investigation began with a search returning **5 providers** in total.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "No major outliers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "No strong clusters.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Moderate confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Limited exposure.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Follow up."
+    )
+
+    report = _ensure_report_text(
+        mode="agent",
+        query="Investigate Illinois providers in Champaign County",
+        report_text=no_metadata_report,
+        assistant_text=[],
+        raw_turns=[{"turn": 1, "assistant": "Investigating providers...", "tool_results": []}],
+        tool_calls=tool_calls,
+    )
+
+    assert "Providers identified in primary search: 5." in report
+
+
 def _make_mock_response(content, tool_calls=None, finish_reason="stop"):
     """Build a MagicMock that mimics an OpenAI ChatCompletion response."""
     message = MagicMock()
@@ -171,8 +404,27 @@ def _make_mock_response(content, tool_calls=None, finish_reason="stop"):
 
 
 def test_openrouter_investigation_continues_truncated_turn(monkeypatch):
-    final_report = (
+    final_report_raw = (
         "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "SURELOCK_METRICS: {\"provider_count\": 0, \"flagged_count\": 1}\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "Narrative.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "Dossiers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "Patterns.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Estimate.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Recommendations.\n\n"
+        "SURELOCK_FINDINGS_JSON_START\n"
+        "[{\"provider_name\":\"Provider A\",\"address\":\"100 Main St\",\"flag_type\":\"model_anomaly\",\"flag\":\"Test flag\"}]\n"
+        "SURELOCK_FINDINGS_JSON_END"
+    )
+    final_report_expected = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n\n"
         "## 1. INVESTIGATION NARRATIVE\n"
         "Narrative.\n\n"
         "## 2. PROVIDER DOSSIERS\n"
@@ -198,7 +450,7 @@ def test_openrouter_investigation_continues_truncated_turn(monkeypatch):
             finish_reason="stop",
         ),
         _make_mock_response(
-            content=final_report,
+            content=final_report_raw,
             tool_calls=None,
             finish_reason="stop",
         ),
@@ -227,12 +479,32 @@ def test_openrouter_investigation_continues_truncated_turn(monkeypatch):
     )
 
     assert result["raw_turns"][0]["assistant"] == "Chunk A\n\nChunk B"
-    assert result["report_text"] == final_report
+    assert result["report_text"] == final_report_expected
+    assert len(result["flagged"]) == 0
 
 
 def test_openrouter_stream_continues_truncated_turn(monkeypatch):
-    final_report = (
+    final_report_raw = (
         "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "SURELOCK_METRICS: {\"provider_count\": 0, \"flagged_count\": 1}\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "Narrative.\n\n"
+        "## 2. PROVIDER DOSSIERS\n"
+        "Dossiers.\n\n"
+        "## 3. PATTERN ANALYSIS\n"
+        "Patterns.\n\n"
+        "## 4. CONFIDENCE CALIBRATION\n"
+        "Confidence.\n\n"
+        "## 5. EXPOSURE ESTIMATE\n"
+        "Estimate.\n\n"
+        "## 6. RECOMMENDATIONS\n"
+        "Recommendations.\n\n"
+        "SURELOCK_FINDINGS_JSON_START\n"
+        "[{\"provider_name\":\"Provider A\",\"address\":\"100 Main St\",\"flag_type\":\"model_anomaly\",\"flag\":\"Test flag\"}]\n"
+        "SURELOCK_FINDINGS_JSON_END"
+    )
+    final_report_expected = (
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n\n"
         "## 1. INVESTIGATION NARRATIVE\n"
         "Narrative.\n\n"
         "## 2. PROVIDER DOSSIERS\n"
@@ -258,7 +530,7 @@ def test_openrouter_stream_continues_truncated_turn(monkeypatch):
             finish_reason="stop",
         ),
         _make_mock_response(
-            content=final_report,
+            content=final_report_raw,
             tool_calls=None,
             finish_reason="stop",
         ),
@@ -291,7 +563,8 @@ def test_openrouter_stream_continues_truncated_turn(monkeypatch):
     complete_event = next(e for e in events if e.get("event") == "complete")
     payload = complete_event["payload"]
     assert payload["raw_turns"][0]["assistant"] == "Part 1\n\nPart 2"
-    assert payload["report_text"] == final_report
+    assert payload["report_text"] == final_report_expected
+    assert len(payload["flagged"]) == 0
 
 
 # ── _extract_metrics sequence tracking tests ──

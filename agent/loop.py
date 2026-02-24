@@ -248,34 +248,204 @@ def _normalize_addr(addr: str) -> str:
     return re.sub(r"\s+", " ", a).strip()
 
 
-def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Extract provider_count and flagged list from accumulated tool call results."""
-    def _to_int(value: Any, default: int = 0) -> int:
-        try:
-            if value is None:
-                return default
-            if isinstance(value, (int, float)):
-                return int(value)
-            raw = str(value).replace(",", "").strip()
-            if not raw:
-                return default
-            return int(float(raw))
-        except (TypeError, ValueError):
-            return default
+def _normalize_name(name: str) -> str:
+    raw = re.sub(r"[^A-Z0-9]+", " ", str(name).upper())
+    return re.sub(r"\s+", " ", raw).strip()
 
-    def _provider_snapshot(provider: Dict[str, Any], fallback_addr: str = "") -> Dict[str, Any]:
-        return {
-            "name": str(provider.get("name", "")).strip(),
-            "address": str(provider.get("address", fallback_addr)).strip() or fallback_addr,
-            "city": str(provider.get("city", "")).strip(),
-            "zip": str(provider.get("zip", "")).strip(),
-            "state": str(provider.get("state", "")).strip().upper(),
-            "source": str(provider.get("source", "")).strip(),
-            "license_type": str(provider.get("license_type", "")).strip(),
-            "status": str(provider.get("status", "")).strip(),
-            "capacity": _to_int(provider.get("capacity", 0), 0),
+
+def _names_compatible(left: str, right: str) -> bool:
+    left_norm = _normalize_name(left)
+    right_norm = _normalize_name(right)
+    if not left_norm or not right_norm:
+        return False
+    if left_norm == right_norm:
+        return True
+    if len(left_norm) >= 8 and left_norm in right_norm:
+        return True
+    if len(right_norm) >= 8 and right_norm in left_norm:
+        return True
+    left_tokens = set(left_norm.split())
+    right_tokens = set(right_norm.split())
+    overlap = left_tokens & right_tokens
+    if len(overlap) < 2:
+        return False
+    return len(overlap) >= min(len(left_tokens), len(right_tokens)) - 1
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return int(value)
+        raw = str(value).replace(",", "").strip()
+        if not raw:
+            return default
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def _provider_snapshot(provider: Dict[str, Any], fallback_addr: str = "") -> Dict[str, Any]:
+    return {
+        "name": str(provider.get("name", "")).strip(),
+        "address": str(provider.get("address", fallback_addr)).strip() or fallback_addr,
+        "city": str(provider.get("city", "")).strip(),
+        "zip": str(provider.get("zip", "")).strip(),
+        "state": str(provider.get("state", "")).strip().upper(),
+        "source": str(provider.get("source", "")).strip(),
+        "license_type": str(provider.get("license_type", "")).strip(),
+        "status": str(provider.get("status", "")).strip(),
+        "capacity": _to_int(provider.get("capacity", 0), 0),
+        "license_number": str(provider.get("license_number", "")).strip(),
+    }
+
+
+def _collect_search_provider_rows(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for tc in tool_calls:
+        if tc.get("tool") != "search_childcare_providers":
+            continue
+        result = tc.get("result")
+        if not isinstance(result, list):
+            continue
+        for provider in result:
+            if not isinstance(provider, dict):
+                continue
+            row = _provider_snapshot(provider)
+            dedup_key = (
+                _normalize_name(row.get("name", "")),
+                _normalize_addr(row.get("address", "")),
+                str(row.get("license_number", "")).upper(),
+            )
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            rows.append(row)
+    return rows
+
+
+def _select_provider_match(
+    finding: Dict[str, Any],
+    *,
+    by_addr: Dict[str, List[Dict[str, Any]]],
+    by_name: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Any] | None:
+    finding_name = str(finding.get("provider_name", "")).strip()
+    finding_addr = str(finding.get("address", "")).strip()
+    norm_addr = _normalize_addr(finding_addr)
+    norm_name = _normalize_name(finding_name)
+
+    if norm_addr and norm_addr in by_addr:
+        candidates = by_addr[norm_addr]
+        if norm_name:
+            for candidate in candidates:
+                if _names_compatible(finding_name, str(candidate.get("name", ""))):
+                    return candidate
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    if norm_name and norm_name in by_name:
+        candidates = by_name[norm_name]
+        if norm_addr:
+            for candidate in candidates:
+                if _normalize_addr(candidate.get("address", "")) == norm_addr:
+                    return candidate
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    return None
+
+
+def _reconcile_model_findings_with_provider_evidence(
+    findings: List[Dict[str, Any]],
+    *,
+    tool_calls: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not findings:
+        return []
+
+    provider_rows = _collect_search_provider_rows(tool_calls)
+    if not provider_rows:
+        logger.warning(
+            "Dropping model findings because no search_childcare_providers evidence was captured in this run."
+        )
+        return []
+
+    by_addr: Dict[str, List[Dict[str, Any]]] = {}
+    by_name: Dict[str, List[Dict[str, Any]]] = {}
+    for row in provider_rows:
+        norm_addr = _normalize_addr(row.get("address", ""))
+        norm_name = _normalize_name(row.get("name", ""))
+        if norm_addr:
+            by_addr.setdefault(norm_addr, []).append(row)
+        if norm_name:
+            by_name.setdefault(norm_name, []).append(row)
+
+    reconciled: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    dropped = 0
+
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        matched_provider = _select_provider_match(finding, by_addr=by_addr, by_name=by_name)
+        if not matched_provider:
+            dropped += 1
+            continue
+
+        merged = dict(finding)
+        merged["provider_name"] = str(matched_provider.get("name") or finding.get("provider_name") or "").strip() or "Unknown provider"
+        merged["address"] = str(matched_provider.get("address") or finding.get("address") or "").strip() or "Unknown address"
+
+        for key in ("city", "zip", "state", "license_type", "status"):
+            if merged.get(key) not in (None, ""):
+                continue
+            value = matched_provider.get(key)
+            if value not in (None, ""):
+                merged[key] = value
+
+        if merged.get("licensed_capacity") in (None, "", 0):
+            provider_capacity = _to_int(matched_provider.get("capacity", 0), 0)
+            if provider_capacity > 0:
+                merged["licensed_capacity"] = provider_capacity
+
+        source_hint = str(merged.get("source") or matched_provider.get("source") or "").strip() or "model"
+        merged["provider"] = {
+            "name": merged["provider_name"],
+            "address": merged["address"],
+            "city": str(merged.get("city", "")),
+            "zip": str(merged.get("zip", "")),
+            "state": str(merged.get("state", "")),
+            "license_type": str(merged.get("license_type", "")),
+            "status": str(merged.get("status", "")),
+            "capacity": _to_int(merged.get("licensed_capacity", matched_provider.get("capacity", 0)), 0),
+            "source": source_hint,
         }
 
+        dedup_key = (
+            _normalize_name(merged.get("provider_name", "")),
+            _normalize_addr(merged.get("address", "")),
+            str(merged.get("flag_type", "model_anomaly")).lower(),
+        )
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        reconciled.append(merged)
+
+    if dropped:
+        logger.warning(
+            "Dropped %s model findings that could not be matched to search_childcare_providers results.",
+            dropped,
+        )
+    return reconciled
+
+
+def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract provider_count and flagged list from accumulated tool call results."""
     def _activeish_status(status: str) -> bool:
         s = str(status or "").strip().lower()
         if not s:
@@ -571,6 +741,10 @@ _PROMPT_ECHO_LINE_PATTERNS = (
     r"(?i)^\s*begin\s+writing\s+the\s+report.*$",
 )
 
+_REPORT_METADATA_PREFIX = "SURELOCK_METRICS:"
+_REPORT_FINDINGS_START = "SURELOCK_FINDINGS_JSON_START"
+_REPORT_FINDINGS_END = "SURELOCK_FINDINGS_JSON_END"
+
 
 def _report_already_written(assistant_text: List[str]) -> bool:
     """Return True if the assistant has already produced a final investigation report."""
@@ -648,6 +822,191 @@ def _looks_like_final_report(text: str) -> bool:
     if marker_hits >= 3:
         return True
     return marker_hits >= 2 and heading_hits >= 4
+
+
+def _extract_report_metadata(text: str) -> tuple[Dict[str, int], str]:
+    raw = text or ""
+    if not raw.strip():
+        return {}, ""
+    lines = raw.splitlines()
+
+    marker_idx = -1
+    marker_payload = ""
+    for idx, line in enumerate(lines[:20]):
+        stripped = line.strip()
+        if stripped.startswith(_REPORT_METADATA_PREFIX):
+            marker_idx = idx
+            marker_payload = stripped[len(_REPORT_METADATA_PREFIX):].strip()
+            break
+
+    if marker_idx < 0:
+        return {}, raw
+
+    metadata: Dict[str, int] = {}
+    try:
+        decoded = json.loads(marker_payload)
+    except Exception:
+        decoded = {}
+    if isinstance(decoded, dict):
+        for key in ("provider_count", "flagged_count"):
+            value = decoded.get(key)
+            if isinstance(value, (int, float)) and value >= 0:
+                metadata[key] = int(value)
+                continue
+            if isinstance(value, str):
+                parsed = value.replace(",", "").strip()
+                if parsed.isdigit():
+                    metadata[key] = int(parsed)
+
+    remaining = lines[:marker_idx] + lines[marker_idx + 1:]
+    return metadata, "\n".join(remaining).strip()
+
+
+def _normalize_model_findings(raw_findings: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_findings, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for row in raw_findings:
+        if not isinstance(row, dict):
+            continue
+
+        provider_name = str(
+            row.get("provider_name")
+            or row.get("name")
+            or row.get("provider")
+            or ""
+        ).strip()
+        address = str(row.get("address") or "").strip()
+        flag_text = str(
+            row.get("flag")
+            or row.get("finding")
+            or row.get("reason")
+            or row.get("summary")
+            or ""
+        ).strip()
+        flag_type = str(row.get("flag_type") or "model_anomaly").strip() or "model_anomaly"
+
+        if not provider_name and not address and not flag_text:
+            continue
+
+        item: Dict[str, Any] = {
+            "flag_type": flag_type,
+            "provider_name": provider_name or "Unknown provider",
+            "address": address or "Unknown address",
+            "flag": flag_text or "Model-identified anomaly requiring follow-up.",
+        }
+
+        for key in (
+            "licensed_capacity",
+            "max_legal_capacity",
+            "excess_capacity",
+            "building_sqft",
+            "license_type",
+            "status",
+            "city",
+            "zip",
+            "state",
+            "county",
+            "confidence",
+            "confidence_label",
+            "note",
+            "source",
+            "latitude",
+            "longitude",
+        ):
+            if key in row and row.get(key) not in (None, ""):
+                item[key] = row.get(key)
+
+        evidence = row.get("evidence")
+        if isinstance(evidence, list):
+            item["evidence"] = [str(e).strip() for e in evidence if str(e).strip()][:8]
+        elif isinstance(evidence, str) and evidence.strip():
+            item["evidence"] = [evidence.strip()]
+
+        if isinstance(row.get("recommended_next_steps"), list):
+            item["recommended_next_steps"] = [
+                str(step).strip()
+                for step in row.get("recommended_next_steps", [])
+                if str(step).strip()
+            ][:8]
+
+        item["provider"] = {
+            "name": item["provider_name"],
+            "address": item["address"],
+            "city": str(item.get("city", "")),
+            "zip": str(item.get("zip", "")),
+            "state": str(item.get("state", "")),
+            "license_type": str(item.get("license_type", "")),
+            "status": str(item.get("status", "")),
+            "capacity": item.get("licensed_capacity", 0),
+            "source": str(item.get("source", "model")),
+        }
+
+        dedup_key = (
+            item["provider_name"].upper(),
+            _normalize_addr(item["address"]),
+            item["flag_type"].lower(),
+        )
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        normalized.append(item)
+
+    return normalized
+
+
+def _extract_report_findings(text: str) -> tuple[List[Dict[str, Any]], str, bool]:
+    raw = text or ""
+    if not raw.strip():
+        return [], "", False
+
+    start = raw.find(_REPORT_FINDINGS_START)
+    end = raw.find(_REPORT_FINDINGS_END)
+    if start < 0 or end < 0 or end <= start:
+        return [], raw, False
+
+    payload = raw[start + len(_REPORT_FINDINGS_START):end].strip()
+    parsed: Any = []
+    try:
+        parsed = json.loads(payload)
+    except Exception:
+        parsed = []
+
+    findings = _normalize_model_findings(parsed)
+    remaining = (raw[:start] + raw[end + len(_REPORT_FINDINGS_END):]).strip()
+    return findings, remaining, True
+
+
+def _report_metadata_mismatch_reason(
+    metadata: Dict[str, int],
+    *,
+    expected_provider_count: int,
+    expected_flagged_count: int,
+) -> str | None:
+    if expected_provider_count <= 0:
+        return None
+
+    metadata_provider_count = metadata.get("provider_count")
+    if metadata_provider_count is None:
+        return "missing provider_count metadata"
+    if metadata_provider_count != expected_provider_count:
+        return (
+            f"provider_count mismatch (expected={expected_provider_count} "
+            f"observed={metadata_provider_count})"
+        )
+
+    metadata_flagged_count = metadata.get("flagged_count")
+    if metadata_flagged_count is None:
+        return "missing flagged_count metadata"
+    if metadata_flagged_count != expected_flagged_count:
+        return (
+            f"flagged_count mismatch (expected={expected_flagged_count} "
+            f"observed={metadata_flagged_count})"
+        )
+    return None
 
 
 def _synthesize_report(
@@ -738,6 +1097,69 @@ def _synthesize_report(
     return "\n".join(lines).strip()
 
 
+def _ensure_report_bundle(
+    *,
+    mode: str,
+    query: str,
+    report_text: str,
+    assistant_text: List[str],
+    raw_turns: List[Dict[str, Any]],
+    tool_calls: List[Dict[str, Any]],
+) -> tuple[str, List[Dict[str, Any]]]:
+    raw_text = report_text or ""
+    text = _normalize_report_output(raw_text)
+    if mode != "agent":
+        return text, []
+
+    metrics = _extract_metrics(tool_calls)
+    expected_provider_count = int(metrics.get("provider_count", 0) or 0) if isinstance(metrics, dict) else 0
+
+    def _accept_or_fallback(candidate_raw: str) -> tuple[str, List[Dict[str, Any]], bool]:
+        metadata, without_meta = _extract_report_metadata(candidate_raw)
+        raw_findings, without_findings, has_findings_block = _extract_report_findings(without_meta)
+        findings = _reconcile_model_findings_with_provider_evidence(raw_findings, tool_calls=tool_calls)
+        candidate = _normalize_report_output(without_findings or without_meta or candidate_raw)
+        if not _looks_like_final_report(candidate):
+            return "", [], False
+        if not has_findings_block:
+            logger.warning("Report metadata validation failed (missing findings JSON block); using synthesized fallback report.")
+            return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls), [], True
+        reason = _report_metadata_mismatch_reason(
+            metadata,
+            expected_provider_count=expected_provider_count,
+            expected_flagged_count=len(raw_findings),
+        )
+        if reason:
+            logger.warning(
+                "Report metadata validation failed (%s); using synthesized fallback report.",
+                reason,
+            )
+            return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls), [], True
+        return candidate, findings, True
+
+    accepted, findings, handled = _accept_or_fallback(raw_text)
+    if handled:
+        return accepted, findings
+
+    inline_raw = _extract_inline_report(assistant_text)
+    accepted, findings, handled = _accept_or_fallback(inline_raw)
+    if handled:
+        return accepted, findings
+
+    turns_inline_raw = _extract_inline_report(
+        [str(turn.get("assistant", "")).strip() for turn in raw_turns if str(turn.get("assistant", "")).strip()]
+    )
+    accepted, findings, handled = _accept_or_fallback(turns_inline_raw)
+    if handled:
+        return accepted, findings
+
+    if text:
+        logger.warning("Report text looked incomplete; using synthesized fallback report.")
+    else:
+        logger.warning("Report text missing; using synthesized fallback report.")
+    return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls), []
+
+
 def _ensure_report_text(
     *,
     mode: str,
@@ -747,28 +1169,15 @@ def _ensure_report_text(
     raw_turns: List[Dict[str, Any]],
     tool_calls: List[Dict[str, Any]],
 ) -> str:
-    text = _normalize_report_output(report_text or "")
-    if mode != "agent":
-        return text
-
-    if _looks_like_final_report(text):
-        return text
-
-    inline = _normalize_report_output(_extract_inline_report(assistant_text))
-    if _looks_like_final_report(inline):
-        return inline
-
-    turns_inline = _normalize_report_output(_extract_inline_report(
-        [str(turn.get("assistant", "")).strip() for turn in raw_turns if str(turn.get("assistant", "")).strip()]
-    ))
-    if _looks_like_final_report(turns_inline):
-        return turns_inline
-
-    if text:
-        logger.warning("Report text looked incomplete; using synthesized fallback report.")
-    else:
-        logger.warning("Report text missing; using synthesized fallback report.")
-    return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls)
+    report, _findings = _ensure_report_bundle(
+        mode=mode,
+        query=query,
+        report_text=report_text,
+        assistant_text=assistant_text,
+        raw_turns=raw_turns,
+        tool_calls=tool_calls,
+    )
+    return report
 
 
 def _continuation_nudge(
@@ -933,12 +1342,28 @@ def _build_image_message(sv_results: List[Dict[str, Any]]) -> Dict[str, Any] | N
     return {"role": "user", "content": content_blocks}
 
 
-_REPORT_GENERATION_PROMPT = (
+_REPORT_GENERATION_PROMPT_TEMPLATE = (
     "Your investigation turns are now complete. Write the final investigation report NOW.\n\n"
     "IMPORTANT: Start writing the actual report immediately. Do NOT describe what the report "
     "should contain — just write it. Do NOT output meta-instructions or guidelines.\n\n"
-    "Begin with:\n\n"
-    "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+    "Output contract (required):\n"
+    "1. First line: # SURELOCK HOMES INVESTIGATION REPORT\n"
+    f"2. Second non-empty line: {_REPORT_METADATA_PREFIX} {{\"provider_count\": <int>, \"flagged_count\": <int>}}\n"
+    "3. Then continue with the report sections below.\n"
+    f"4. At the very end append a machine-readable findings block:\n"
+    f"{_REPORT_FINDINGS_START}\n"
+    "[\n"
+    "  {\n"
+    "    \"provider_name\": \"...\",\n"
+    "    \"address\": \"...\",\n"
+    "    \"flag_type\": \"...\",\n"
+    "    \"flag\": \"...\",\n"
+    "    \"confidence\": \"high|medium|low\",\n"
+    "    \"evidence\": [\"...\"]\n"
+    "  }\n"
+    "]\n"
+    f"{_REPORT_FINDINGS_END}\n"
+    "Use [] when there are no flagged providers.\n\n"
     "Then write these sections using the data from your investigation:\n\n"
     "## 1. INVESTIGATION NARRATIVE\n"
     "The full story: what area was investigated, how many providers were found, "
@@ -954,21 +1379,35 @@ _REPORT_GENERATION_PROMPT = (
     "For each flagged provider: excess_capacity x monthly_rate x 12. Aggregate total.\n\n"
     "## 6. RECOMMENDATIONS\n"
     "Prioritized next steps for human investigators.\n\n"
-    "Include ALL findings from the investigation. Do NOT call any tools. Write the full report now."
+    "Include ALL findings from the investigation. Every finding in the JSON block must map to a provider "
+    "already returned by search_childcare_providers in this run (same provider and/or same address). "
+    "Do NOT invent provider names or addresses. Do NOT call any tools. Write the full report now."
 )
+
+
+def _build_report_generation_prompt(*, tool_calls: List[Dict[str, Any]]) -> str:
+    metrics = _extract_metrics(tool_calls)
+    provider_count = int(metrics.get("provider_count", 0) or 0) if isinstance(metrics, dict) else 0
+    return (
+        f"{_REPORT_GENERATION_PROMPT_TEMPLATE}\n\n"
+        "Authoritative investigation metrics (from tool outputs):\n"
+        f"- provider_count = {provider_count}\n"
+        "Set flagged_count using your own findings list length and make sure it matches the JSON block."
+    )
 
 
 def _generate_report_with_openai(
     *,
     client: Any,
     messages: List[Dict[str, Any]],
+    report_prompt: str,
     model: str,
     max_tokens: int,
     emit_chunk: Callable[[str], None] | None = None,
 ) -> str:
     """Run the final report generation call (with continuation handling)."""
     _enforce_context_budget(messages)
-    messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
+    messages.append({"role": "user", "content": report_prompt})
     logger.info("Sending report generation request to %s (timeout=%ds)...", model, _LLM_REPORT_TIMEOUT_SECONDS)
 
     report_chunks: List[str] = []
@@ -1047,7 +1486,7 @@ def _build_result_payload(
     **extras: Any,
 ) -> Dict[str, Any]:
     """Assemble the standard investigation result payload."""
-    final_report_text = _ensure_report_text(
+    final_report_text, model_flagged = _ensure_report_bundle(
         mode=mode,
         query=query,
         report_text=report_text,
@@ -1056,6 +1495,7 @@ def _build_result_payload(
         tool_calls=tool_calls,
     )
     metrics = _extract_metrics(tool_calls)
+    flagged_payload = model_flagged if mode == "agent" else metrics["flagged"]
     thinking_analysis = build_thinking_analysis(
         query=query,
         report_text=final_report_text,
@@ -1069,7 +1509,7 @@ def _build_result_payload(
         "status": status,
         "turns": len(raw_turns),
         "provider_count": metrics["provider_count"],
-        "flagged": metrics["flagged"],
+        "flagged": flagged_payload,
         "narration": narration.to_markdown(),
         "assistant_text": "\n".join(assistant_text) or fallback_text,
         "report_text": final_report_text,
@@ -1279,9 +1719,11 @@ def _run_openai_investigation(
 
     if not _looks_like_final_report(report_text_final):
         try:
+            report_prompt = _build_report_generation_prompt(tool_calls=tool_calls)
             generated_report = _generate_report_with_openai(
                 client=client,
                 messages=messages,
+                report_prompt=report_prompt,
                 model=model,
                 max_tokens=settings.max_tokens,
             )
@@ -1519,9 +1961,11 @@ def _run_openai_investigation_stream(
         if not _looks_like_final_report(report_text_final):
             yield {"event": "report_start"}
             try:
+                report_prompt = _build_report_generation_prompt(tool_calls=tool_calls)
                 generated_report = _generate_report_with_openai(
                     client=client,
                     messages=messages,
+                    report_prompt=report_prompt,
                     model=model,
                     max_tokens=settings.max_tokens,
                 )
@@ -2013,7 +2457,7 @@ def run_investigation(
             # LLM wrote the report inline during investigation — extract it
             report_text_final = _extract_inline_report(assistant_text)
         else:
-            messages.append({"role": "user", "content": _REPORT_GENERATION_PROMPT})
+            messages.append({"role": "user", "content": _build_report_generation_prompt(tool_calls=tool_calls)})
             try:
                 report_response = client.messages.create(
                     model=model or settings.model,

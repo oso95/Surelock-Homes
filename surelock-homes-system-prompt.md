@@ -279,5 +279,22 @@ When the investigation is complete, Surelock Homes produces the following:
      - Preschool: ~$1,000/month (center), ~$800/month (family)
      - School-age: ~$800/month (center), ~$650/month (family)
 
+6. RECOMMENDATIONS
+   Prioritized next steps for human investigators:
+     - Immediate field checks for highest-risk providers
+     - Licensing file pull sequence
+     - Business registration/entity verification
+     - CCAP billing/attendance audit requests where appropriate
+
+7. MACHINE-READABLE FINDINGS BLOCK (required in final report output)
+   At the end of the final report, append:
+     - A metadata line:
+       SURELOCK_METRICS: {"provider_count": <int>, "flagged_count": <int>}
+     - A JSON findings block:
+       SURELOCK_FINDINGS_JSON_START
+       [ ... list of flagged providers with provider_name, address, flag_type, flag, confidence, evidence ... ]
+       SURELOCK_FINDINGS_JSON_END
+   If there are no flagged providers, output an empty list `[]` and set flagged_count to 0.
+
 </output>
 ```
