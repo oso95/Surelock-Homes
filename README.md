@@ -48,6 +48,7 @@ Open:
 LLM_PROVIDER=openrouter
 MODEL=anthropic/claude-opus-4.6
 OPENROUTER_API_KEY=
+LLM_MAX_CONTEXT_CHARS=1000000
 ```
 
 Anthropic option:
@@ -57,6 +58,10 @@ LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=
 MODEL=claude-opus-4-6-20250514
 ```
+
+`LLM_MAX_CONTEXT_CHARS` controls message-history trimming before each LLM call:
+- `1000000` works well for 1M-context models
+- `0` disables trimming entirely
 
 ### Google Maps
 

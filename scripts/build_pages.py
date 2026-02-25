@@ -21,6 +21,14 @@ OUTPUT_DIR = ROOT / "output"
 DATA_DIR = ROOT / "docs" / "data"
 RUNS_DIR = DATA_DIR / "runs"
 
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from agent.loop import _ensure_report_bundle as _ensure_report_bundle_for_pages
+except Exception:  # pragma: no cover - keep pages build resilient if agent imports fail
+    _ensure_report_bundle_for_pages = None
+
 TIMESTAMP_RE = re.compile(r"^\d{8}T\d{6}Z$")
 
 
@@ -50,6 +58,38 @@ def extract_run(run_dir: Path):
     if not isinstance(flagged, list):
         flagged = []
 
+    report_text = str(data.get("report_text", "") or "")
+    if _ensure_report_bundle_for_pages is not None and str(data.get("mode", "")).lower() == "agent":
+        assistant_text_raw = data.get("assistant_text", "")
+        if isinstance(assistant_text_raw, list):
+            assistant_blocks = [str(block) for block in assistant_text_raw if str(block).strip()]
+        elif isinstance(assistant_text_raw, str) and assistant_text_raw.strip():
+            assistant_blocks = [assistant_text_raw]
+        else:
+            assistant_blocks = []
+
+        raw_turns = data.get("raw_turns", [])
+        if not isinstance(raw_turns, list):
+            raw_turns = []
+        tool_calls = data.get("tool_calls", [])
+        if not isinstance(tool_calls, list):
+            tool_calls = []
+
+        try:
+            normalized_report, normalized_flagged = _ensure_report_bundle_for_pages(
+                mode="agent",
+                query=str(data.get("query", "")),
+                report_text=report_text,
+                assistant_text=assistant_blocks,
+                raw_turns=raw_turns,
+                tool_calls=tool_calls,
+            )
+            report_text = str(normalized_report or "")
+            if isinstance(normalized_flagged, list):
+                flagged = normalized_flagged
+        except Exception as exc:
+            print(f"  Warning: report normalization failed for {run_dir.name} — {exc}", file=sys.stderr)
+
     run_id = run_dir.name
 
     # Index-level summary (lightweight)
@@ -73,7 +113,7 @@ def extract_run(run_dir: Path):
         "turns": data.get("turns", 0),
         "provider_count": data.get("provider_count", 0),
         "timestamp": parse_timestamp(run_id),
-        "report_text": data.get("report_text", ""),
+        "report_text": report_text,
         "narration": data.get("narration", ""),
         "flagged": flagged,
     }

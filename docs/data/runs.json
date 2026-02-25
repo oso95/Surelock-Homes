@@ -1,0 +1,32 @@
+[
+  {
+    "id": "20260225T090647Z",
+    "query": "Investigate Minnesota childcare providers in Hennepin County ZIP 55407. Use county property/GIS cross-reference where available, prioritize high-risk anomalies, and produce a comprehensive report with flagged and cleared providers.",
+    "mode": "agent",
+    "status": "complete",
+    "turns": 13,
+    "provider_count": 58,
+    "flags": 28,
+    "timestamp": "2026-02-25 09:06 UTC"
+  },
+  {
+    "id": "20260225T075139Z",
+    "query": "Investigate Minnesota childcare providers in Hennepin County ZIP 55443. Use county property/GIS cross-reference where available, prioritize high-risk anomalies, and produce a comprehensive report with flagged and cleared providers.",
+    "mode": "agent",
+    "status": "complete",
+    "turns": 13,
+    "provider_count": 40,
+    "flags": 11,
+    "timestamp": "2026-02-25 07:51 UTC"
+  },
+  {
+    "id": "20260225T064916Z",
+    "query": "Investigate Illinois childcare providers in Cook County ZIP 60623. Use county property/GIS cross-reference where available, prioritize high-risk anomalies, and produce a comprehensive report with flagged and cleared providers.",
+    "mode": "agent",
+    "status": "complete",
+    "turns": 13,
+    "provider_count": 62,
+    "flags": 2,
+    "timestamp": "2026-02-25 06:49 UTC"
+  }
+]

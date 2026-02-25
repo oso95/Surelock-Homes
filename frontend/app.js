@@ -481,6 +481,53 @@ function setStatusText(message, isError = false) {
   runMessage.style.color = isError ? "#ef4444" : "#94a3b8";
 }
 
+function findReportStartIndex(text) {
+  const source = String(text || "");
+  const patterns = [
+    /^#\s+SURELOCK HOMES(?:\s+—\s+|\s+)?(?:FINAL\s+)?INVESTIGATION REPORT\b/im,
+    /^#\s+INVESTIGATION REPORT\b/im,
+    /^##\s*1\.\s*INVESTIGATION NARRATIVE\b/im,
+    /^1\.\s*INVESTIGATION NARRATIVE\b/im,
+  ];
+  let first = null;
+  patterns.forEach((pattern) => {
+    const match = source.match(pattern);
+    if (!match || typeof match.index !== "number") return;
+    if (first === null || match.index < first) first = match.index;
+  });
+  return first;
+}
+
+function stripFindingsBlock(text) {
+  const source = String(text || "");
+  const start = source.indexOf("SURELOCK_FINDINGS_JSON_START");
+  const end = source.indexOf("SURELOCK_FINDINGS_JSON_END");
+  if (start < 0 || end < 0 || end <= start) return source;
+  return (source.slice(0, start) + source.slice(end + "SURELOCK_FINDINGS_JSON_END".length)).trim();
+}
+
+function sanitizeReportText(text) {
+  let source = String(text || "").trim();
+  if (!source) return "";
+  const startAt = findReportStartIndex(source);
+  if (startAt !== null && startAt >= 0) {
+    source = source.slice(startAt).trimStart();
+  }
+  source = source.replace(/^\s*SURELOCK_METRICS:\s*\{.*\}\s*$/gim, "").trim();
+  source = stripFindingsBlock(source);
+  return source.trim();
+}
+
+function looksLikeFinalReportText(text) {
+  const source = String(text || "");
+  if (!source.trim()) return false;
+  return (
+    /^#\s+SURELOCK HOMES(?:\s+—\s+|\s+)?(?:FINAL\s+)?INVESTIGATION REPORT\b/im.test(source) ||
+    /^#\s+INVESTIGATION REPORT\b/im.test(source) ||
+    /^##\s*1\.\s*INVESTIGATION NARRATIVE\b/im.test(source)
+  );
+}
+
 /* ==========================================================================
    Render Functions
    ========================================================================== */
@@ -492,7 +539,7 @@ function renderMetrics(payload) {
 }
 
 function renderNarrative(payload) {
-  const reportText = (payload.report_text || "").trim();
+  const reportText = sanitizeReportText(payload.report_text || "");
   if (!reportText) {
     narrativeContent.innerHTML = '<p class="placeholder">Final report not available for this run. See Investigation tab for turn-by-turn narration.</p>';
     narrativeWordCount.textContent = "";
@@ -506,7 +553,7 @@ function renderNarrative(payload) {
 
 function renderInvestigationNarration(payload) {
   const rawTurns = Array.isArray(payload.raw_turns) ? payload.raw_turns : [];
-  const reportText = (payload.report_text || "").trim();
+  const reportText = sanitizeReportText(payload.report_text || "");
 
   // Collect per-turn narration (exclude the final report turn which has no tool_results)
   const turns = [];
@@ -514,6 +561,7 @@ function renderInvestigationNarration(payload) {
     const text = (turn.assistant || "").trim();
     if (!text) return;
     if (reportText && text === reportText) return;
+    if (looksLikeFinalReportText(text)) return;
     const tools = Array.isArray(turn.tool_results)
       ? turn.tool_results.map(tr => tr.tool).join(", ")
       : Array.isArray(turn.tools)
@@ -547,7 +595,7 @@ function renderThinking(payload) {
   // Build thinking from raw_turns (per-turn assistant reasoning) when the
   // thinking array only contains tool markers (OpenRouter mode).  For
   // Anthropic mode the thinking array has actual extended-thinking content.
-  const reportText = (payload.report_text || "").trim();
+  const reportText = sanitizeReportText(payload.report_text || "");
   const rawThinking = Array.isArray(payload.thinking) ? payload.thinking : [];
   const hasRealThinking = rawThinking.length > 0 && rawThinking.some(t => !String(t).startsWith("tool:"));
 
@@ -560,6 +608,7 @@ function renderThinking(payload) {
       const text = (turn.assistant || "").trim();
       if (!text) return;
       if (reportText && text === reportText) return;
+      if (looksLikeFinalReportText(text)) return;
       const tools = Array.isArray(turn.tool_results)
         ? turn.tool_results.map(tr => tr.tool).join(", ")
         : Array.isArray(turn.tools)
@@ -718,6 +767,10 @@ function buildTimelineEvents(payload) {
       const turnNo = turn.turn || 0;
       const assistantText = (turn.assistant || "").toString().trim();
       if (assistantText) {
+        if (looksLikeFinalReportText(assistantText)) {
+          // Final report belongs in the Report tab only.
+          return;
+        }
         events.push({
           kind: "assistant",
           label: `Turn ${turnNo} - Assistant`,

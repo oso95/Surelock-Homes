@@ -263,6 +263,54 @@ function initReport() {
     });
 }
 
+function findReportStartIndex(text) {
+  const source = String(text || "");
+  const patterns = [
+    /^#\s+SURELOCK HOMES(?:\s+—\s+|\s+)?(?:FINAL\s+)?INVESTIGATION REPORT\b/im,
+    /^#\s+INVESTIGATION REPORT\b/im,
+    /^##\s*1\.\s*INVESTIGATION NARRATIVE\b/im,
+    /^1\.\s*INVESTIGATION NARRATIVE\b/im,
+  ];
+  let first = null;
+  patterns.forEach((pattern) => {
+    const match = source.match(pattern);
+    if (!match || typeof match.index !== "number") return;
+    if (first === null || match.index < first) first = match.index;
+  });
+  return first;
+}
+
+function stripFindingsBlock(text) {
+  const source = String(text || "");
+  const start = source.indexOf("SURELOCK_FINDINGS_JSON_START");
+  const end = source.indexOf("SURELOCK_FINDINGS_JSON_END");
+  if (start < 0 || end < 0 || end <= start) return source;
+  return (source.slice(0, start) + source.slice(end + "SURELOCK_FINDINGS_JSON_END".length)).trim();
+}
+
+function sanitizeReportText(text) {
+  let source = String(text || "").trim();
+  if (!source) return "";
+
+  const startAt = findReportStartIndex(source);
+  if (startAt !== null && startAt >= 0) {
+    source = source.slice(startAt).trimStart();
+  }
+
+  source = source.replace(/^\s*SURELOCK_METRICS:\s*\{.*\}\s*$/gim, "").trim();
+  source = stripFindingsBlock(source);
+  return source.trim();
+}
+
+function stripReportFromNarration(text) {
+  const source = String(text || "").trim();
+  if (!source) return "";
+  const startAt = findReportStartIndex(source);
+  if (startAt === null) return source;
+  if (startAt <= 0) return "";
+  return source.slice(0, startAt).trim();
+}
+
 function renderReport(data) {
   // Query and timestamp
   document.getElementById("reportQuery").textContent = data.query || "Unknown query";
@@ -275,7 +323,7 @@ function renderReport(data) {
 
   // Report tab: render report_text as markdown
   const reportContent = document.getElementById("narrativeContent");
-  const reportText = data.report_text || "";
+  const reportText = sanitizeReportText(data.report_text || "");
   if (reportText.trim()) {
     reportContent.innerHTML = renderMarkdown(reportText);
     const wordCount = reportText.split(/\s+/).filter(Boolean).length;
@@ -286,7 +334,7 @@ function renderReport(data) {
 
   // Investigation Log tab: render narration as markdown
   const narrationContent = document.getElementById("narrationContent");
-  const narration = data.narration || "";
+  const narration = stripReportFromNarration(data.narration || "");
   if (narration.trim()) {
     narrationContent.innerHTML = renderMarkdown(narration);
     const wordCount = narration.split(/\s+/).filter(Boolean).length;

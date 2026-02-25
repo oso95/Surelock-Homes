@@ -38,10 +38,8 @@ from tools.satellite_view import get_satellite_view
 from tools.street_view import get_street_view
 
 
-_LLM_MAX_CONTEXT_CHARS = 180000
-_LLM_TOOL_PAYLOAD_CHARS = 60000   # must fit 200 providers × ~250 chars each after compaction
+_LLM_TOOL_PAYLOAD_CHARS = 0       # 0 disables payload truncation
 _LLM_MAX_MEDIA_ITEMS = 6          # images, reviews, features — bulky, rarely need all
-_LLM_MAX_LIST_ITEMS = 200         # provider search results — LLM must see all to triage
 _LLM_MAX_CONTINUATIONS = 3
 _LLM_REPORT_TIMEOUT_SECONDS = 180  # report generation needs far more time than tool calls
 _LLM_CONTINUE_PROMPT = (
@@ -164,11 +162,9 @@ def _summarize_for_model(value: Any, max_depth: int = 2) -> Any:
     if isinstance(value, list):
         compact_items = [
             _summarize_for_model(item, max_depth=max_depth - 1)
-            for item in value[:_LLM_MAX_LIST_ITEMS]
+            for item in value
         ]
         result: Dict[str, Any] = {"count": len(value)}
-        if len(value) > _LLM_MAX_LIST_ITEMS:
-            result["truncated"] = True
         result["items"] = compact_items
         return result
 
@@ -216,6 +212,8 @@ def _infer_state_and_zip(query: str) -> Tuple[str, str | None]:
 
 def _compact_tool_result(value: Any) -> Any:
     compact = _summarize_for_model(value)
+    if _LLM_TOOL_PAYLOAD_CHARS <= 0:
+        return compact
     text = json.dumps(compact, ensure_ascii=False)
     if len(text) <= _LLM_TOOL_PAYLOAD_CHARS:
         return compact
@@ -332,20 +330,52 @@ def _select_provider_match(
     by_addr: Dict[str, List[Dict[str, Any]]],
     by_name: Dict[str, List[Dict[str, Any]]],
 ) -> Dict[str, Any] | None:
+    def _resolve_candidates(candidates: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+        if not candidates:
+            return None
+        if norm_name:
+            for candidate in candidates:
+                if _names_compatible(finding_name, str(candidate.get("name", ""))):
+                    return candidate
+            # Support combined provider labels like "NAME A / NAME B" at one address.
+            if "/" in finding_name:
+                aliases = [part.strip() for part in finding_name.split("/") if part.strip()]
+                for alias in aliases:
+                    for candidate in candidates:
+                        if _names_compatible(alias, str(candidate.get("name", ""))):
+                            return candidate
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
     finding_name = str(finding.get("provider_name", "")).strip()
     finding_addr = str(finding.get("address", "")).strip()
     norm_addr = _normalize_addr(finding_addr)
     norm_name = _normalize_name(finding_name)
 
     if norm_addr and norm_addr in by_addr:
-        candidates = by_addr[norm_addr]
-        if norm_name:
-            for candidate in candidates:
-                if _names_compatible(finding_name, str(candidate.get("name", ""))):
-                    return candidate
-        if len(candidates) == 1:
-            return candidates[0]
+        match = _resolve_candidates(by_addr[norm_addr])
+        if match:
+            return match
         return None
+
+    # Handle combined addresses such as "4129 W CERMAK RD FL 1 / FL 2"
+    # by matching any known provider address that is contained in the finding address.
+    if norm_addr and "/" in finding_addr:
+        partial_candidates: List[Dict[str, Any]] = []
+        seen_partial: set[tuple[str, str]] = set()
+        for addr_key, rows in by_addr.items():
+            if not addr_key or addr_key not in norm_addr:
+                continue
+            for row in rows:
+                dedup_key = (_normalize_name(row.get("name", "")), _normalize_addr(row.get("address", "")))
+                if dedup_key in seen_partial:
+                    continue
+                seen_partial.add(dedup_key)
+                partial_candidates.append(row)
+        match = _resolve_candidates(partial_candidates)
+        if match:
+            return match
 
     if norm_name and norm_name in by_name:
         candidates = by_name[norm_name]
@@ -364,16 +394,16 @@ def _reconcile_model_findings_with_provider_evidence(
     findings: List[Dict[str, Any]],
     *,
     tool_calls: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], int]:
     if not findings:
-        return []
+        return [], 0
 
     provider_rows = _collect_search_provider_rows(tool_calls)
     if not provider_rows:
         logger.warning(
-            "Dropping model findings because no search_childcare_providers evidence was captured in this run."
+            "No search_childcare_providers evidence captured for reconciliation; accepting model findings as-is."
         )
-        return []
+        return findings, 0
 
     by_addr: Dict[str, List[Dict[str, Any]]] = {}
     by_name: Dict[str, List[Dict[str, Any]]] = {}
@@ -441,7 +471,7 @@ def _reconcile_model_findings_with_provider_evidence(
             "Dropped %s model findings that could not be matched to search_childcare_providers results.",
             dropped,
         )
-    return reconciled
+    return reconciled, dropped
 
 
 def _extract_metrics(tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -727,7 +757,7 @@ _REPORT_SECTION_MARKERS = (
 
 _REPORT_HEADER_PATTERNS = (
     r"(?im)^#\s+SURELOCK HOMES(?:\s+—\s+|\s+)?(?:FINAL\s+)?INVESTIGATION REPORT\b",
-    r"(?im)^#\s+SURELOCK HOMES\b",
+    r"(?im)^#\s+INVESTIGATION REPORT\b",
     r"(?im)^##\s*1\.\s*INVESTIGATION NARRATIVE\b",
     r"(?im)^1\.\s*INVESTIGATION NARRATIVE\b",
 )
@@ -759,23 +789,25 @@ def _extract_inline_report(assistant_text: List[str]) -> str:
     Scans through the per-turn text blocks and returns everything from the first
     block that contains a report header marker onward.
     """
-    # Report-start markers — the LLM typically begins with one of these
-    _START_MARKERS = (
-        "SURELOCK HOMES",
-        "INVESTIGATION REPORT",
-        "# Surelock Homes",
-        "# INVESTIGATION REPORT",
-        "## 1. INVESTIGATION NARRATIVE",
-        "1. INVESTIGATION NARRATIVE",
-    )
+    def _find_report_start_index(text: str) -> int | None:
+        first_heading_at: int | None = None
+        for pattern in _REPORT_HEADER_PATTERNS:
+            match = re.search(pattern, text or "")
+            if not match:
+                continue
+            pos = match.start()
+            if first_heading_at is None or pos < first_heading_at:
+                first_heading_at = pos
+        return first_heading_at
+
     report_blocks: List[str] = []
     collecting = False
     for block in assistant_text:
         if not collecting:
-            upper = block.upper()
-            if any(m.upper() in upper for m in _START_MARKERS):
+            start_at = _find_report_start_index(block)
+            if start_at is not None:
                 collecting = True
-                report_blocks.append(block)
+                report_blocks.append(block[start_at:].lstrip(' \t\n"\''))
         else:
             report_blocks.append(block)
     return "\n".join(report_blocks)
@@ -832,7 +864,7 @@ def _extract_report_metadata(text: str) -> tuple[Dict[str, int], str]:
 
     marker_idx = -1
     marker_payload = ""
-    for idx, line in enumerate(lines[:20]):
+    for idx, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith(_REPORT_METADATA_PREFIX):
             marker_idx = idx
@@ -882,6 +914,7 @@ def _normalize_model_findings(raw_findings: Any) -> List[Dict[str, Any]]:
         address = str(row.get("address") or "").strip()
         flag_text = str(
             row.get("flag")
+            or row.get("flag_summary")
             or row.get("finding")
             or row.get("reason")
             or row.get("summary")
@@ -902,6 +935,7 @@ def _normalize_model_findings(raw_findings: Any) -> List[Dict[str, Any]]:
         for key in (
             "licensed_capacity",
             "max_legal_capacity",
+            "estimated_max_capacity",
             "excess_capacity",
             "building_sqft",
             "license_type",
@@ -912,6 +946,9 @@ def _normalize_model_findings(raw_findings: Any) -> List[Dict[str, Any]]:
             "county",
             "confidence",
             "confidence_label",
+            "tier",
+            "accepts_subsidy",
+            "annual_exposure_estimate",
             "note",
             "source",
             "latitude",
@@ -919,6 +956,9 @@ def _normalize_model_findings(raw_findings: Any) -> List[Dict[str, Any]]:
         ):
             if key in row and row.get(key) not in (None, ""):
                 item[key] = row.get(key)
+
+        if "estimated_max_capacity" in item and "max_legal_capacity" not in item:
+            item["max_legal_capacity"] = item.get("estimated_max_capacity")
 
         evidence = row.get("evidence")
         if isinstance(evidence, list):
@@ -1113,17 +1153,32 @@ def _ensure_report_bundle(
 
     metrics = _extract_metrics(tool_calls)
     expected_provider_count = int(metrics.get("provider_count", 0) or 0) if isinstance(metrics, dict) else 0
+    synthesized_flagged = metrics.get("flagged", []) if isinstance(metrics, dict) else []
 
     def _accept_or_fallback(candidate_raw: str) -> tuple[str, List[Dict[str, Any]], bool]:
         metadata, without_meta = _extract_report_metadata(candidate_raw)
         raw_findings, without_findings, has_findings_block = _extract_report_findings(without_meta)
-        findings = _reconcile_model_findings_with_provider_evidence(raw_findings, tool_calls=tool_calls)
+        findings, dropped_findings = _reconcile_model_findings_with_provider_evidence(raw_findings, tool_calls=tool_calls)
         candidate = _normalize_report_output(without_findings or without_meta or candidate_raw)
         if not _looks_like_final_report(candidate):
             return "", [], False
         if not has_findings_block:
             logger.warning("Report metadata validation failed (missing findings JSON block); using synthesized fallback report.")
-            return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls), [], True
+            return (
+                _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls),
+                synthesized_flagged,
+                True,
+            )
+        if dropped_findings > 0:
+            logger.warning(
+                "Report findings validation failed (%s unmatched findings); using synthesized fallback report.",
+                dropped_findings,
+            )
+            return (
+                _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls),
+                synthesized_flagged,
+                True,
+            )
         reason = _report_metadata_mismatch_reason(
             metadata,
             expected_provider_count=expected_provider_count,
@@ -1134,7 +1189,11 @@ def _ensure_report_bundle(
                 "Report metadata validation failed (%s); using synthesized fallback report.",
                 reason,
             )
-            return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls), [], True
+            return (
+                _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls),
+                synthesized_flagged,
+                True,
+            )
         return candidate, findings, True
 
     accepted, findings, handled = _accept_or_fallback(raw_text)
@@ -1157,7 +1216,7 @@ def _ensure_report_bundle(
         logger.warning("Report text looked incomplete; using synthesized fallback report.")
     else:
         logger.warning("Report text missing; using synthesized fallback report.")
-    return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls), []
+    return _synthesize_report(query=query, raw_turns=raw_turns, tool_calls=tool_calls), synthesized_flagged
 
 
 def _ensure_report_text(
@@ -1251,7 +1310,7 @@ def _continuation_nudge(
     )
 
 
-def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _LLM_MAX_CONTEXT_CHARS) -> None:
+def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = 0) -> None:
     if max_chars <= 0:
         return
     keep_tail = 4
@@ -1267,6 +1326,14 @@ def _enforce_context_budget(messages: List[Dict[str, Any]], max_chars: int = _LL
     # assistant turn that requested it.
     while len(messages) > 2 and messages[2].get("role") == "tool":
         messages.pop(2)
+
+
+def _context_budget_chars(settings: Any) -> int:
+    raw = getattr(settings, "llm_max_context_chars", 1000000)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1000000
 
 
 def _to_openai_tools(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1342,58 +1409,111 @@ def _build_image_message(sv_results: List[Dict[str, Any]]) -> Dict[str, Any] | N
     return {"role": "user", "content": content_blocks}
 
 
-_REPORT_GENERATION_PROMPT_TEMPLATE = (
-    "Your investigation turns are now complete. Write the final investigation report NOW.\n\n"
-    "IMPORTANT: Start writing the actual report immediately. Do NOT describe what the report "
-    "should contain — just write it. Do NOT output meta-instructions or guidelines.\n\n"
-    "Output contract (required):\n"
-    "1. First line: # SURELOCK HOMES INVESTIGATION REPORT\n"
-    f"2. Second non-empty line: {_REPORT_METADATA_PREFIX} {{\"provider_count\": <int>, \"flagged_count\": <int>}}\n"
-    "3. Then continue with the report sections below.\n"
-    f"4. At the very end append a machine-readable findings block:\n"
-    f"{_REPORT_FINDINGS_START}\n"
-    "[\n"
-    "  {\n"
-    "    \"provider_name\": \"...\",\n"
-    "    \"address\": \"...\",\n"
-    "    \"flag_type\": \"...\",\n"
-    "    \"flag\": \"...\",\n"
-    "    \"confidence\": \"high|medium|low\",\n"
-    "    \"evidence\": [\"...\"]\n"
-    "  }\n"
-    "]\n"
-    f"{_REPORT_FINDINGS_END}\n"
-    "Use [] when there are no flagged providers.\n\n"
-    "Then write these sections using the data from your investigation:\n\n"
-    "## 1. INVESTIGATION NARRATIVE\n"
-    "The full story: what area was investigated, how many providers were found, "
-    "what was examined, what stood out, what connections were discovered.\n\n"
-    "## 2. PROVIDER DOSSIERS\n"
-    "For each flagged provider: the facts (building sqft, capacity, zoning, visual assessment), "
-    "the reasoning, innocent explanations, recommended next steps, confidence level.\n\n"
-    "## 3. PATTERN ANALYSIS\n"
-    "Cross-provider patterns: shared owners/agents, geographic clustering, temporal patterns.\n\n"
-    "## 4. CONFIDENCE CALIBRATION\n"
-    "What you're confident about vs uncertain about for each finding.\n\n"
-    "## 5. EXPOSURE ESTIMATE\n"
-    "For each flagged provider: excess_capacity x monthly_rate x 12. Aggregate total.\n\n"
-    "## 6. RECOMMENDATIONS\n"
-    "Prioritized next steps for human investigators.\n\n"
-    "Include ALL findings from the investigation. Every finding in the JSON block must map to a provider "
-    "already returned by search_childcare_providers in this run (same provider and/or same address). "
-    "Do NOT invent provider names or addresses. Do NOT call any tools. Write the full report now."
-)
+_REPORT_GENERATION_PROMPT_TEMPLATE = f"""The investigation is complete. Write the final report.
+
+FORMAT REQUIREMENTS:
+
+Line 1 must be exactly:
+# SURELOCK HOMES INVESTIGATION REPORT
+
+Line 2 must be a metrics line in this exact format:
+{_REPORT_METADATA_PREFIX} {{"provider_count": <int>, "flagged_count": <int>}}
+
+Then write the report using these sections:
+
+## SCOPE LIMITATION DISCLOSURE
+The standard disclosure about what this investigation can and cannot detect. This must appear before any findings.
+
+## 1. INVESTIGATION NARRATIVE
+Tell the story of this investigation. What area was examined. How many providers were found and how they broke down by type. What the agent looked at first and why. What stood out. What leads were followed. What surprised the agent. Write this as a narrative, not a summary of tool calls.
+
+## 2. PROVIDER DOSSIERS
+For each flagged provider, write a dossier containing:
+- The facts: all data points gathered (building sqft, lot size, capacity, zoning, property value, year built, ownership, Google presence, business registration, Street View observations)
+- The math: capacity calculations with the formula shown (building_sqft x 0.65 / 35) and outdoor space calculations where applicable
+- The reasoning: why this combination of facts is concerning
+- Innocent explanations: at least two plausible reasons this could be legitimate
+- Recommended next steps: specific actions a human investigator should take
+- Confidence level: HIGH / MEDIUM / LOW with a one-sentence justification
+
+Organize dossiers into tiers:
+- TIER 1 (HIGH CONCERN): Physical impossibility confirmed or near-confirmed
+- TIER 2 (MODERATE CONCERN): Significant anomalies requiring investigation
+- TIER 3 (LOW CONCERN): Minor flags, routine verification recommended
+
+Also include a CLEARED section listing providers that were investigated and showed no anomalies.
+
+## 3. PATTERN ANALYSIS
+Any patterns discovered across multiple providers:
+- Shared owners, registered agents, or property holding companies
+- Geographic clustering (multiple flagged providers on the same block or corridor)
+- Temporal patterns (entities created around the same time)
+- Common characteristics (all missing business registration, all missing Google presence, etc.)
+- Any other connections the evidence revealed
+
+If no cross-provider patterns were found, state that explicitly.
+
+## 4. CONFIDENCE CALIBRATION
+Three subsections:
+- What the agent is confident about (with the data source that makes it confident)
+- What the agent is less sure about (with the source of uncertainty)
+- What could change the assessment (specific conditions that would alter conclusions)
+
+## 5. EXPOSURE ESTIMATE
+For each flagged provider that accepts CCAP/subsidies:
+- excess_capacity = licensed_capacity - estimated_max_capacity
+- monthly_exposure = excess_capacity x blended_monthly_rate
+- annual_exposure = monthly_exposure x 12
+
+Use these blended rates unless the investigation found state-specific rates:
+- MN center-based: ~$1,200/month (blended across age groups)
+- IL center-based: ~$1,100/month (blended across age groups)
+
+Include an aggregate total across all flagged providers.
+
+End with caveats: these are maximum theoretical figures, not confirmed fraud amounts. Licensed capacity does not equal CCAP enrollment. Actual exposure depends on billing records that are not public.
+
+## 6. RECOMMENDATIONS
+Prioritized action items for human investigators:
+- IMMEDIATE (within 2 weeks): the most urgent findings
+- SHORT-TERM (within 30 days): significant but less urgent
+- SYSTEMIC: process improvements suggested by the findings
+
+Each recommendation should name the specific provider and address, and describe the specific action to take.
+
+FINAL BLOCK - append this at the very end of the report:
+
+{_REPORT_FINDINGS_START}
+[
+  {{
+    "provider_name": "exact name from provider search results",
+    "address": "exact address from provider search results",
+    "licensed_capacity": <int or null>,
+    "estimated_max_capacity": <int or null>,
+    "flag_type": "<one of: physical_impossibility | visual_mismatch | institutional_invisibility | closed_but_licensed | unregistered_entity | capacity_concern | data_anomaly>",
+    "flag_summary": "one sentence describing the finding",
+    "confidence": "<one of: high | medium | low>",
+    "tier": <1 or 2 or 3>,
+    "accepts_subsidy": <true | false | null>,
+    "annual_exposure_estimate": <number or null>,
+    "evidence_sources": ["list of data sources used: property_data | street_view | google_places | business_registration | licensing_records | capacity_calculation"]
+  }}
+]
+{_REPORT_FINDINGS_END}
+
+Use an empty array [] if no providers were flagged.
+
+RULES:
+- Every provider in the JSON block must match a provider returned by search_childcare_providers during this investigation. Do not invent names or addresses.
+- Do not call any tools. The investigation is over. Write from the evidence already gathered.
+- Write in the voice established during the investigation. This is the final product the human sees.
+- The report should read like it was written by an investigator, not generated by a template.
+"""
 
 
 def _build_report_generation_prompt(*, tool_calls: List[Dict[str, Any]]) -> str:
-    metrics = _extract_metrics(tool_calls)
-    provider_count = int(metrics.get("provider_count", 0) or 0) if isinstance(metrics, dict) else 0
-    return (
-        f"{_REPORT_GENERATION_PROMPT_TEMPLATE}\n\n"
-        "Authoritative investigation metrics (from tool outputs):\n"
-        f"- provider_count = {provider_count}\n"
-        "Set flagged_count using your own findings list length and make sure it matches the JSON block."
-    )
+    _ = tool_calls  # prompt is fully defined in template; keep signature stable for callers
+    return _REPORT_GENERATION_PROMPT_TEMPLATE
 
 
 def _generate_report_with_openai(
@@ -1403,10 +1523,11 @@ def _generate_report_with_openai(
     report_prompt: str,
     model: str,
     max_tokens: int,
+    context_budget_chars: int,
     emit_chunk: Callable[[str], None] | None = None,
 ) -> str:
     """Run the final report generation call (with continuation handling)."""
-    _enforce_context_budget(messages)
+    _enforce_context_budget(messages, max_chars=context_budget_chars)
     messages.append({"role": "user", "content": report_prompt})
     logger.info("Sending report generation request to %s (timeout=%ds)...", model, _LLM_REPORT_TIMEOUT_SECONDS)
 
@@ -1445,7 +1566,7 @@ def _generate_report_with_openai(
             logger.warning("LLM report text remained truncated after %s continuations", _LLM_MAX_CONTINUATIONS)
             break
         messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
-        _enforce_context_budget(messages)
+        _enforce_context_budget(messages, max_chars=context_budget_chars)
 
     if not report_chunks:
         logger.warning("Report generation returned empty response.")
@@ -1565,6 +1686,7 @@ def _run_openai_investigation(
     settings: Any,
 ) -> Dict[str, Any]:
     client = _create_openai_client(settings)
+    context_budget_chars = _context_budget_chars(settings)
 
     target_state, target_zip = _infer_state_and_zip(query)
     tool_defs = get_tool_definitions()
@@ -1581,7 +1703,7 @@ def _run_openai_investigation(
     _pending_sv_images: List[Dict[str, Any]] = []  # street view results to show next turn
 
     for turn in range(1, max_turns + 1):
-        _enforce_context_budget(messages)
+        _enforce_context_budget(messages, max_chars=context_budget_chars)
 
         # Build request messages — inject turn progress and pending images temporarily
         request_messages = list(messages)
@@ -1637,7 +1759,7 @@ def _run_openai_investigation(
                 break
 
             messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
-            _enforce_context_budget(messages)
+            _enforce_context_budget(messages, max_chars=context_budget_chars)
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -1726,6 +1848,7 @@ def _run_openai_investigation(
                 report_prompt=report_prompt,
                 model=model,
                 max_tokens=settings.max_tokens,
+                context_budget_chars=context_budget_chars,
             )
             if generated_report:
                 report_text_final = _append_final_report_to_state(
@@ -1758,6 +1881,7 @@ def _run_openai_investigation_stream(
     settings: Any,
 ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
     client = _create_openai_client(settings)
+    context_budget_chars = _context_budget_chars(settings)
 
     target_state, target_zip = _infer_state_and_zip(query)
     yield {
@@ -1784,7 +1908,7 @@ def _run_openai_investigation_stream(
 
     try:
         for turn in range(1, max_turns + 1):
-            _enforce_context_budget(messages)
+            _enforce_context_budget(messages, max_chars=context_budget_chars)
             yield {"event": "turn_start", "turn": turn, "max_turns": max_turns}
 
             # Build request messages — inject turn progress and pending images temporarily
@@ -1846,7 +1970,7 @@ def _run_openai_investigation_stream(
                     break
 
                 messages.append({"role": "user", "content": _LLM_CONTINUE_PROMPT})
-                _enforce_context_budget(messages)
+                _enforce_context_budget(messages, max_chars=context_budget_chars)
                 response = client.chat.completions.create(
                     model=model,
                     messages=messages,
@@ -1968,6 +2092,7 @@ def _run_openai_investigation_stream(
                     report_prompt=report_prompt,
                     model=model,
                     max_tokens=settings.max_tokens,
+                    context_budget_chars=context_budget_chars,
                 )
                 if generated_report:
                     report_text_final = _append_final_report_to_state(

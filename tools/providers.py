@@ -214,6 +214,16 @@ def _mn_cache_has_license_number() -> bool:
         return header is not None and "license_number" in header
 
 
+def _il_cache_has_license_number() -> bool:
+    """Check if the IL cache CSV includes the license_number column."""
+    if not IL_LIVE_CACHE.exists():
+        return False
+    with IL_LIVE_CACHE.open(encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        return header is not None and "license_number" in header
+
+
 def _load_mn_live_records() -> List[Dict[str, Any]]:
     if _is_fresh_cache(MN_LIVE_CACHE) and _mn_cache_has_license_number():
         return _read_csv(MN_LIVE_CACHE)
@@ -265,7 +275,7 @@ def _parse_dcfs_rows_from_payload(payload: str) -> List[Dict[str, str]]:
 
 
 def _load_il_live_records() -> List[Dict[str, Any]]:
-    if _is_fresh_cache(IL_LIVE_CACHE):
+    if _is_fresh_cache(IL_LIVE_CACHE) and _il_cache_has_license_number():
         return _read_csv(IL_LIVE_CACHE)
 
     session = requests.Session()
@@ -295,6 +305,7 @@ def _load_il_live_records() -> List[Dict[str, Any]]:
             "license_type": row.get("license_type", ""),
             "status": row.get("status", ""),
             "state": "IL",
+            "license_number": row.get("license_number", ""),
         }
         for row in parsed
     ]

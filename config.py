@@ -43,6 +43,7 @@ class Settings:
     llm_provider: str = os.getenv("LLM_PROVIDER", "anthropic")
     model: str = os.getenv("MODEL", "claude-opus-4-6-20250514")
     thinking_budget_tokens: int = _env_int("THINKING_BUDGET_TOKENS", 10000)
+    llm_max_context_chars: int = _env_int("LLM_MAX_CONTEXT_CHARS", 1000000)
     max_tokens: int = _env_int("MAX_TOKENS", 16000)
     tool_timeout_seconds: int = _env_int("TOOL_TIMEOUT_SECONDS", 30)
     gis_timeout_seconds: int = _env_int("GIS_TIMEOUT_SECONDS", 8)
@@ -66,6 +67,7 @@ def load_settings() -> Settings:
         llm_provider=provider,
         model=os.getenv("MODEL", "claude-opus-4-6-20250514"),
         thinking_budget_tokens=_env_int("THINKING_BUDGET_TOKENS", 10000),
+        llm_max_context_chars=_env_int("LLM_MAX_CONTEXT_CHARS", 1000000),
         max_tokens=_env_int("MAX_TOKENS", 16000),
         tool_timeout_seconds=_env_int("TOOL_TIMEOUT_SECONDS", 30),
         gis_timeout_seconds=_env_int("GIS_TIMEOUT_SECONDS", 8),

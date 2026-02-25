@@ -82,6 +82,17 @@ def test_extract_inline_report_handles_surelock_homes_marker():
     assert "Checking licensing" not in result
 
 
+def test_extract_inline_report_skips_investigation_initiated_preamble():
+    blocks = [
+        "# Surelock Homes — Investigation Initiated\n\nTurn updates...",
+        "More investigation narration.",
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n## 1. INVESTIGATION NARRATIVE\nFinal narrative.",
+    ]
+    result = _extract_inline_report(blocks)
+    assert result.startswith("# SURELOCK HOMES INVESTIGATION REPORT")
+    assert "Investigation Initiated" not in result
+
+
 def test_extract_text_handles_structured_content():
     content = [
         {"type": "text", "text": "First chunk"},
@@ -116,6 +127,19 @@ def test_normalize_report_output_strips_prompt_echo_preamble():
     out = _normalize_report_output(raw)
     assert out.startswith("# SURELOCK HOMES INVESTIGATION REPORT")
     assert "Do NOT use introductory text" not in out
+
+
+def test_normalize_report_output_trims_investigation_narration_preamble():
+    raw = (
+        "# Surelock Homes — Investigation Initiated\n\n"
+        "Interim narration before report.\n\n"
+        "# SURELOCK HOMES INVESTIGATION REPORT\n\n"
+        "## 1. INVESTIGATION NARRATIVE\n"
+        "Body."
+    )
+    out = _normalize_report_output(raw)
+    assert out.startswith("# SURELOCK HOMES INVESTIGATION REPORT")
+    assert "Investigation Initiated" not in out
 
 
 def test_ensure_report_text_synthesizes_when_missing():
@@ -302,9 +326,8 @@ def test_ensure_report_bundle_filters_findings_without_provider_evidence():
     )
 
     assert "SURELOCK HOMES INVESTIGATION REPORT" in report
-    assert len(findings) == 1
-    assert findings[0]["provider_name"] == "Real Provider"
-    assert findings[0]["address"] == "100 Main St, Chicago, IL 60612"
+    assert "Providers identified in primary search: 1." in report
+    assert len(findings) == 0
 
 
 def test_ensure_report_text_falls_back_when_findings_block_missing():
@@ -480,7 +503,8 @@ def test_openrouter_investigation_continues_truncated_turn(monkeypatch):
 
     assert result["raw_turns"][0]["assistant"] == "Chunk A\n\nChunk B"
     assert result["report_text"] == final_report_expected
-    assert len(result["flagged"]) == 0
+    assert len(result["flagged"]) == 1
+    assert result["flagged"][0]["provider_name"] == "Provider A"
 
 
 def test_openrouter_stream_continues_truncated_turn(monkeypatch):
@@ -564,7 +588,8 @@ def test_openrouter_stream_continues_truncated_turn(monkeypatch):
     payload = complete_event["payload"]
     assert payload["raw_turns"][0]["assistant"] == "Part 1\n\nPart 2"
     assert payload["report_text"] == final_report_expected
-    assert len(payload["flagged"]) == 0
+    assert len(payload["flagged"]) == 1
+    assert payload["flagged"][0]["provider_name"] == "Provider A"
 
 
 # ── _extract_metrics sequence tracking tests ──
