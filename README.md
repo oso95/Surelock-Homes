@@ -22,6 +22,13 @@ This project helps surface inconsistencies; it does **not** make legal or fraud 
 - Static report data for GitHub Pages in `docs/data/`
 - OpenRouter support (default) and Anthropic support
 
+## Current setup notes
+
+- Backend/UI run from FastAPI + docs site workflow (no Streamlit app).
+- System prompt file is `prompts/system-prompt.md`.
+- Final report generation prompt is in `agent/loop.py`.
+- LLM context trimming is controlled by `LLM_MAX_CONTEXT_CHARS` in `.env`.
+
 ## Quick Start
 
 ```bash
@@ -62,6 +69,11 @@ MODEL=claude-opus-4-6-20250514
 `LLM_MAX_CONTEXT_CHARS` controls message-history trimming before each LLM call:
 - `1000000` works well for 1M-context models
 - `0` disables trimming entirely
+
+### Prompt files
+
+- System prompt: `prompts/system-prompt.md`
+- Final report prompt template: `agent/loop.py` (`_REPORT_GENERATION_PROMPT_TEMPLATE`)
 
 ### Google Maps
 
@@ -131,6 +143,7 @@ tools/         Data and evidence tools
 frontend/      Main app UI
 docs/          Static site for published reports
 scripts/       Data/build utilities
+prompts/       System and investigation prompts
 output/        Saved run artifacts
 tests/         Test suite
 ```

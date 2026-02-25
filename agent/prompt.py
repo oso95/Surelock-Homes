@@ -10,7 +10,7 @@ def load_system_prompt(
     target_zip: Optional[str] = None,
     max_turns: Optional[int] = None,
 ) -> str:
-    path = Path(__file__).resolve().parents[1] / "surelock-homes-system-prompt.md"
+    path = Path(__file__).resolve().parents[1] / "prompts" / "system-prompt.md"
     text = path.read_text(encoding="utf-8")
     text = text.replace("{dynamic_date}", current_utc_date())
 
@@ -74,4 +74,3 @@ def load_system_prompt(
         text += budget_block
 
     return text
-
