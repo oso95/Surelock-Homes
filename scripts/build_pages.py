@@ -59,7 +59,13 @@ def extract_run(run_dir: Path):
         flagged = []
 
     report_text = str(data.get("report_text", "") or "")
-    if _ensure_report_bundle_for_pages is not None and str(data.get("mode", "")).lower() == "agent":
+    # Preserve the report exactly as stored in output/result.json.
+    # Only attempt normalization fallback when report_text is missing.
+    if (
+        _ensure_report_bundle_for_pages is not None
+        and str(data.get("mode", "")).lower() == "agent"
+        and not report_text.strip()
+    ):
         assistant_text_raw = data.get("assistant_text", "")
         if isinstance(assistant_text_raw, list):
             assistant_blocks = [str(block) for block in assistant_text_raw if str(block).strip()]
