@@ -10,6 +10,8 @@ Usage:
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import json
 import re
 from datetime import datetime
@@ -24,8 +26,9 @@ from bs4 import BeautifulSoup
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-MAX_PROVIDER_CAP = 10  # cap providers per ZIP for demo
-TOOL_TIMEOUT = 10      # seconds per HTTP request
+MAX_PROVIDER_CAP = 10   # cap providers per ZIP for demo
+TOOL_TIMEOUT = 10       # seconds per HTTP request (Google, Socrata)
+DCFS_TIMEOUT = 30       # IL DCFS is a slow government site
 
 # Cook County Socrata endpoints (no auth required)
 _COOK_ADDR_URL = "https://datacatalog.cookcountyil.gov/resource/3723-97qp.json"
@@ -36,12 +39,12 @@ _COOK_ASSESSED_URL = "https://datacatalog.cookcountyil.gov/resource/uzyt-m557.js
 # Illinois DCFS provider lookup
 _IL_DCFS_URL = "https://sunshine.dcfs.illinois.gov/Content/Licensing/Daycare/ProviderLookup.aspx"
 
-# Module-level config — populated by Streamlit sidebar before agent runs
-_config: dict[str, str] = {"google_maps_api_key": ""}
-
-
 def _google_key() -> str:
-    return _config.get("google_maps_api_key", "")
+    """Get Google Maps API key from Streamlit session state."""
+    try:
+        return st.session_state.get("google_maps_api_key", "")
+    except Exception:
+        return ""
 
 
 # ── System Prompt ──────────────────────────────────────────────────────────────
@@ -186,13 +189,15 @@ def search_childcare_providers(zip_code: str, state: str = "IL") -> str:
     """
     if state.upper() != "IL":
         return json.dumps({"status": "error", "error": "Only Illinois (IL) is supported in this demo."})
+    if not re.match(r"^\d{5}$", str(zip_code).strip()):
+        return json.dumps({"status": "error", "error": f"Invalid ZIP code '{zip_code}'. Must be exactly 5 digits."})
 
     try:
         session = requests.Session()
         headers = {"User-Agent": "Mozilla/5.0"}
 
         # Step 1: GET page to extract ASP.NET ViewState tokens
-        page = session.get(_IL_DCFS_URL, headers=headers, timeout=TOOL_TIMEOUT)
+        page = session.get(_IL_DCFS_URL, headers=headers, timeout=DCFS_TIMEOUT)
         page.raise_for_status()
         soup = BeautifulSoup(page.text, "html.parser")
 
@@ -208,13 +213,12 @@ def search_childcare_providers(zip_code: str, state: str = "IL") -> str:
             if key.endswith("ASPxSearch") and key.startswith("ctl00$ContentPlaceHolderContent$"):
                 form_data[key] = "Search"
 
-        resp = session.post(_IL_DCFS_URL, data=form_data, headers=headers, timeout=TOOL_TIMEOUT)
+        resp = session.post(_IL_DCFS_URL, data=form_data, headers=headers, timeout=DCFS_TIMEOUT)
         resp.raise_for_status()
 
         # Step 3: Parse CSV rows embedded in the response
-        import csv, io as _io
         providers = []
-        for row in csv.reader(_io.StringIO(resp.text)):
+        for row in csv.reader(io.StringIO(resp.text)):
             if len(row) < 17:
                 continue
             if not re.match(r"^\d{6}$", str(row[0]).strip()):
@@ -277,12 +281,14 @@ def get_property_data(address: str, county: str = "Cook", state: str = "IL") -> 
         if parsed.get("suffix"):
             parts.append(parsed["suffix"])
         addr_prefix = " ".join(parts)
+        # Escape single quotes to prevent SoQL injection
+        safe_prefix = addr_prefix.replace("'", "''")
 
         # Step 1: Resolve to PIN via Cook County address dataset
         pin: Optional[str] = None
         for query_pattern in [
-            f"prop_address_full='{addr_prefix}'",
-            f"starts_with(prop_address_full, '{addr_prefix}')",
+            f"prop_address_full='{safe_prefix}'",
+            f"starts_with(prop_address_full, '{safe_prefix}')",
         ]:
             params = {
                 "$where": query_pattern,
@@ -334,8 +340,8 @@ def get_property_data(address: str, county: str = "Cook", state: str = "IL") -> 
                     "source": "Cook County Residential Characteristics (Socrata)",
                 })
 
-        # Step 3: Try commercial valuation
-        dashed = f"{pin[:2]}-{pin[2:4]}-{pin[4:7]}-{pin[7:10]}-{pin[10:]}" if len(pin) >= 10 else pin
+        # Step 3: Try commercial valuation (Cook County PINs are 14 digits)
+        dashed = f"{pin[:2]}-{pin[2:4]}-{pin[4:7]}-{pin[7:10]}-{pin[10:]}" if len(pin) == 14 else pin
         r = requests.get(_COOK_COMMERCIAL_URL, params={
             "keypin": dashed,
             "$select": "bldgsf,landsf,yearbuilt,property_type_use",
@@ -521,7 +527,8 @@ def get_street_view(address: str) -> str:
             meta_status = meta.get("status", "").upper()
             if meta_status == "REQUEST_DENIED":
                 return json.dumps({"status": "error", "error": meta.get("error_message", "Street View denied")})
-            if meta_status not in ("OK", "ZERO_RESULTS"):
+            if meta_status != "OK":
+                # ZERO_RESULTS = no imagery at this location; skip this heading
                 continue
 
             img_r = requests.get(
@@ -849,7 +856,7 @@ elif investigate_btn and openrouter_key:
     # Build agent
     try:
         agent = Agent(
-            model=OpenRouter(id=model_id, api_key=openrouter_key),
+            model=OpenRouter(id=model_id, api_key=openrouter_key, max_tokens=16384),
             tools=[
                 search_childcare_providers,
                 get_property_data,
