@@ -173,6 +173,16 @@ Contribution expectations:
 - Avoid committing runtime-only cache artifacts.
 - Treat outputs as investigative leads, not final determinations.
 
+## Streamlit Demo
+
+A self-contained single-file demo is available in [`demo/ai_fraud_investigation_agent/`](demo/ai_fraud_investigation_agent/) — designed for [awesome-llm-apps](https://github.com/Shubhamsaboo/awesome-llm-apps). It runs without the FastAPI backend and requires only an OpenRouter API key.
+
+```bash
+cd demo/ai_fraud_investigation_agent
+pip install -r requirements.txt
+streamlit run fraud_investigation_agent.py
+```
+
 ## Notes
 
 - This project relies on public/external datasets that can be incomplete or temporarily unavailable.
